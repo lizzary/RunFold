@@ -10,7 +10,7 @@ from runfold_server.errors import StartupError
 
 _SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 _BUSY_TIMEOUT_MILLISECONDS = 5_000
-_IMMUTABLE_SEED_TABLES = ("service_state",)
+_IMMUTABLE_SEED_TABLES = ("service_state", "capabilities")
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +130,18 @@ def _assert_current_schema(connection: sqlite3.Connection, schema: str) -> None:
                     "incompatible_database_seed",
                     "The SQLite fixed data is incompatible; rebuild the data directory explicitly",
                 )
+        if _protected_role_rows(connection) != _protected_role_rows(expected):
+            raise StartupError(
+                "incompatible_database_seed",
+                "The SQLite protected roles are incompatible; rebuild the data directory "
+                "explicitly",
+            )
+        if _protected_role_capabilities(connection) != _protected_role_capabilities(expected):
+            raise StartupError(
+                "incompatible_database_seed",
+                "The SQLite protected role capabilities are incompatible; rebuild the data "
+                "directory explicitly",
+            )
     finally:
         expected.close()
 
@@ -195,6 +207,32 @@ def _foreign_keys(connection: sqlite3.Connection, table: str) -> tuple[tuple[obj
 def _table_rows(connection: sqlite3.Connection, table: str) -> tuple[tuple[object, ...], ...]:
     quoted_table = '"' + table.replace('"', '""') + '"'
     return tuple(tuple(row) for row in connection.execute(f"SELECT * FROM {quoted_table}"))
+
+
+def _protected_role_rows(connection: sqlite3.Connection) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        tuple(row)
+        for row in connection.execute(
+            "SELECT * FROM roles WHERE is_protected = 1 ORDER BY id"
+        )
+    )
+
+
+def _protected_role_capabilities(
+    connection: sqlite3.Connection,
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        tuple(row)
+        for row in connection.execute(
+            """
+            SELECT rc.role_id, rc.capability_code
+            FROM role_capabilities AS rc
+            JOIN roles AS r ON r.id = rc.role_id
+            WHERE r.is_protected = 1
+            ORDER BY rc.role_id, rc.capability_code
+            """
+        )
+    )
 
 
 def _normalize_sql(sql: str) -> str:

@@ -31,3 +31,9 @@ def valid_environment(tmp_path: Path) -> dict[str, str]:
         "RUNFOLD_DEFAULT_MONTHLY_EMBEDDING_TOKENS": "1000000",
     }
 
+
+@pytest.fixture
+def admin_environment(valid_environment: dict[str, str]) -> dict[str, str]:
+    valid_environment["RUNFOLD_BOOTSTRAP_ADMIN_USERNAME"] = "admin"
+    valid_environment["RUNFOLD_BOOTSTRAP_ADMIN_PASSWORD"] = "correct horse battery staple"
+    return valid_environment

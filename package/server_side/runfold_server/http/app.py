@@ -13,8 +13,12 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
+from runfold_server.access_control.service import AccessControlService
 from runfold_server.errors import ApiError
+from runfold_server.http.routers.access_control import create_access_control_router
+from runfold_server.http.routers.auth import create_auth_router
 from runfold_server.http.routers.health import create_health_router
+from runfold_server.identity.service import IdentityService
 
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _LOGGER = logging.getLogger("runfold_server.http")
@@ -24,6 +28,8 @@ def create_app(
     *,
     allowed_origins: tuple[str, ...],
     readiness_check: Callable[[], bool],
+    identity_service: IdentityService | None = None,
+    access_control_service: AccessControlService | None = None,
 ) -> FastAPI:
     app = FastAPI(title="RunFold Server", version="unversioned")
     app.add_middleware(
@@ -123,6 +129,13 @@ def create_app(
         )
 
     app.include_router(create_health_router(readiness_check))
+    if (identity_service is None) != (access_control_service is None):
+        raise ValueError("Identity and access-control services must be installed together")
+    if identity_service is not None and access_control_service is not None:
+        app.include_router(create_auth_router(identity_service))
+        app.include_router(
+            create_access_control_router(identity_service, access_control_service)
+        )
     return app
 
 
@@ -155,6 +168,7 @@ def _error_response(
 ) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
+        headers={"WWW-Authenticate": "Bearer"} if status_code == 401 else None,
         content={
             "code": code,
             "message": message,
