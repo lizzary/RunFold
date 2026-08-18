@@ -52,6 +52,79 @@ CREATE TABLE role_capabilities (
     PRIMARY KEY (role_id, capability_code)
 );
 
+CREATE TABLE documents (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    created_by_user_id TEXT NOT NULL REFERENCES users(id),
+    original_filename TEXT NOT NULL,
+    media_type TEXT NOT NULL CHECK (media_type IN (
+        'text/plain',
+        'text/markdown',
+        'application/pdf',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    )),
+    storage_key TEXT NOT NULL UNIQUE,
+    byte_size INTEGER NOT NULL CHECK (byte_size >= 0),
+    content_hash TEXT NOT NULL,
+    extracted_characters INTEGER NOT NULL CHECK (extracted_characters >= 0),
+    chunk_count INTEGER NOT NULL CHECK (chunk_count >= 0),
+    index_state TEXT NOT NULL CHECK (index_state IN (
+        'indexing', 'ready', 'failed', 'deleting'
+    )),
+    index_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE document_acl (
+    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+    role_id TEXT REFERENCES roles(id) ON DELETE CASCADE,
+    access_level INTEGER NOT NULL CHECK (access_level IN (10, 20, 30)),
+    granted_by_user_id TEXT REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    CHECK (
+        (user_id IS NOT NULL AND role_id IS NULL)
+        OR
+        (user_id IS NULL AND role_id IS NOT NULL)
+    )
+);
+
+CREATE TABLE user_limits (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    max_documents INTEGER CHECK (max_documents IS NULL OR max_documents > 0),
+    max_storage_bytes INTEGER CHECK (
+        max_storage_bytes IS NULL OR max_storage_bytes > 0
+    ),
+    monthly_embedding_tokens INTEGER CHECK (
+        monthly_embedding_tokens IS NULL OR monthly_embedding_tokens > 0
+    ),
+    updated_by_user_id TEXT NOT NULL REFERENCES users(id),
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE usage_monthly (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    month_utc TEXT NOT NULL,
+    embedding_tokens INTEGER NOT NULL DEFAULT 0 CHECK (embedding_tokens >= 0),
+    uploads INTEGER NOT NULL DEFAULT 0 CHECK (uploads >= 0),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, month_utc)
+);
+
+CREATE TABLE rag_index_settings (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    embedding_identity TEXT NOT NULL,
+    model TEXT NOT NULL,
+    dimensions INTEGER NOT NULL CHECK (dimensions > 0),
+    chunk_size INTEGER NOT NULL CHECK (chunk_size > 0),
+    chunk_overlap INTEGER NOT NULL CHECK (
+        chunk_overlap >= 0 AND chunk_overlap < chunk_size
+    ),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE audit_events (
     id INTEGER PRIMARY KEY,
     actor_user_id TEXT REFERENCES users(id),
@@ -68,6 +141,17 @@ CREATE TABLE audit_events (
 CREATE INDEX idx_auth_sessions_user ON auth_sessions(user_id);
 CREATE INDEX idx_auth_sessions_expires_at ON auth_sessions(expires_at);
 CREATE INDEX idx_user_roles_role ON user_roles(role_id);
+CREATE INDEX idx_documents_state ON documents(index_state);
+CREATE INDEX idx_documents_creator ON documents(created_by_user_id);
+CREATE INDEX idx_documents_created_at ON documents(created_at, id);
+CREATE UNIQUE INDEX uq_document_acl_user
+ON document_acl(document_id, user_id)
+WHERE user_id IS NOT NULL;
+CREATE UNIQUE INDEX uq_document_acl_role
+ON document_acl(document_id, role_id)
+WHERE role_id IS NOT NULL;
+CREATE INDEX idx_document_acl_user ON document_acl(user_id, document_id);
+CREATE INDEX idx_document_acl_role ON document_acl(role_id, document_id);
 
 INSERT INTO service_state (singleton, status) VALUES (1, 'ready');
 

@@ -4,7 +4,8 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -17,8 +18,10 @@ from runfold_server.access_control.service import AccessControlService
 from runfold_server.errors import ApiError
 from runfold_server.http.routers.access_control import create_access_control_router
 from runfold_server.http.routers.auth import create_auth_router
+from runfold_server.http.routers.documents import create_documents_router
 from runfold_server.http.routers.health import create_health_router
 from runfold_server.identity.service import IdentityService
+from runfold_server.knowledge.service import KnowledgeService
 
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _LOGGER = logging.getLogger("runfold_server.http")
@@ -30,8 +33,18 @@ def create_app(
     readiness_check: Callable[[], bool],
     identity_service: IdentityService | None = None,
     access_control_service: AccessControlService | None = None,
+    knowledge_service: KnowledgeService | None = None,
+    shutdown: Callable[[], Awaitable[None]] | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="RunFold Server", version="unversioned")
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            if shutdown is not None:
+                await shutdown()
+
+    app = FastAPI(title="RunFold Server", version="unversioned", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(allowed_origins),
@@ -136,6 +149,10 @@ def create_app(
         app.include_router(
             create_access_control_router(identity_service, access_control_service)
         )
+        if knowledge_service is not None:
+            app.include_router(create_documents_router(identity_service, knowledge_service))
+    elif knowledge_service is not None:
+        raise ValueError("Knowledge service requires identity and access-control services")
     return app
 
 
