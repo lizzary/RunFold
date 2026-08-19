@@ -418,7 +418,7 @@ def test_allowed_role_crud_user_restore_and_logout(
     assert client.get("/api/auth/me", headers=headers).status_code == 401
 
 
-def test_bootstrapped_openapi_contains_m3_and_no_future_routes(
+def test_bootstrapped_openapi_contains_m4_and_no_future_routes(
     m1_client: tuple[TestClient, Path],
 ) -> None:
     client, _ = m1_client
@@ -430,13 +430,14 @@ def test_bootstrapped_openapi_contains_m3_and_no_future_routes(
     assert "/api/rag/documents" in paths
     assert "/api/rag/documents/{document_id}/acl" in paths
     assert "/api/rag/search" in paths
+    assert "/api/usage/me" in paths
+    assert "/api/usage/users/{user_id}/limits" in paths
+    assert "/api/security/audit" in paths
     assert not any(
         forbidden in path
         for path in paths
-        for forbidden in (
-            "/usage",
-            "/audit",
-            "/agent",
+            for forbidden in (
+                "/agent",
             "/tools",
             "/skills",
         )

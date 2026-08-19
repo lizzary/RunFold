@@ -13,6 +13,7 @@ import pytest
 from runfold_server.bootstrap import bootstrap
 from runfold_server.config import load_settings
 from runfold_server.errors import StartupError
+from runfold_server.llm.openai_embeddings import OpenAIEmbeddingsClient
 
 
 def test_restart_converges_interrupted_indexing_and_deleting_without_embeddings(
@@ -92,6 +93,55 @@ def test_index_configuration_change_rebuilds_only_when_no_ready_documents(
     assert error.value.code == "incompatible_rag_index"
 
 
+def test_restart_checks_ready_integrity_and_removes_orphan_vectors_without_embeddings(
+    admin_environment: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = load_settings(admin_environment)
+    bootstrap(settings)
+    database = settings.data_dir / "runfold.sqlite3"
+    with sqlite3.connect(database) as connection:
+        creator_id = connection.execute(
+            "SELECT id FROM users WHERE username = 'admin'"
+        ).fetchone()[0]
+
+    valid_id = _insert_document(database, creator_id, "ready")
+    corrupt_id = _insert_document(database, creator_id, "ready")
+    for document_id, value in ((valid_id, b"ready"), (corrupt_id, b"tampered")):
+        directory = settings.data_dir / "objects" / document_id
+        directory.mkdir()
+        (directory / "source").write_bytes(value)
+        (directory / "extracted.txt").write_text("ready", encoding="utf-8")
+    expected_hash = hashlib.sha256(b"ready").hexdigest()
+    _add_lance_row(settings.data_dir / "lance", valid_id, expected_hash)
+    _add_lance_row(settings.data_dir / "lance", corrupt_id, expected_hash)
+    orphan_id = str(uuid.uuid4())
+    _add_lance_row(settings.data_dir / "lance", orphan_id, expected_hash)
+
+    async def forbidden_embed(
+        self: OpenAIEmbeddingsClient, values: tuple[str, ...]
+    ) -> None:
+        raise AssertionError("startup recovery must not call embeddings")
+
+    monkeypatch.setattr(OpenAIEmbeddingsClient, "embed", forbidden_embed)
+    bootstrap(settings)
+
+    with sqlite3.connect(database) as connection:
+        valid_state = connection.execute(
+            "SELECT index_state FROM documents WHERE id = ?", (valid_id,)
+        ).fetchone()[0]
+        corrupt = connection.execute(
+            "SELECT index_state, index_error, chunk_count FROM documents WHERE id = ?",
+            (corrupt_id,),
+        ).fetchone()
+    assert valid_state == "ready"
+    assert corrupt == ("failed", "integrity_check_failed", 0)
+    assert not (settings.data_dir / "objects" / corrupt_id / "extracted.txt").exists()
+    table = lancedb.connect(settings.data_dir / "lance").open_table("chunks")
+    assert table.count_rows(f"document_id = '{valid_id}'") == 1
+    assert table.count_rows(f"document_id = '{corrupt_id}'") == 0
+    assert table.count_rows(f"document_id = '{orphan_id}'") == 0
+
+
 def _insert_document(database: Path, creator_id: str, state: str) -> str:
     document_id = str(uuid.uuid4())
     now = datetime.now(UTC).isoformat()
@@ -129,7 +179,7 @@ def _insert_document(database: Path, creator_id: str, state: str) -> str:
     return document_id
 
 
-def _add_lance_row(path: Path, document_id: str) -> None:
+def _add_lance_row(path: Path, document_id: str, content_hash: str = "stale") -> None:
     table = lancedb.connect(path).open_table("chunks")
     row = pa.Table.from_pylist(
         [
@@ -137,7 +187,7 @@ def _add_lance_row(path: Path, document_id: str) -> None:
                 "document_id": document_id,
                 "chunk_id": "chunk",
                 "ordinal": 0,
-                "content_hash": "stale",
+                "content_hash": content_hash,
                 "text": "untrusted",
                 "vector": [0.0] * 8,
             }

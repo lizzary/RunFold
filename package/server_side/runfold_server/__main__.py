@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import os
 from collections.abc import Mapping, Sequence
 
 import uvicorn
 
-from runfold_server.bootstrap import bootstrap
+from runfold_server.bootstrap import bootstrap, compact_index, rebuild_index
 from runfold_server.config import load_settings
 from runfold_server.errors import StartupError
 from runfold_server.observability import configure_logging
@@ -17,6 +18,16 @@ _LOGGER = logging.getLogger("runfold_server")
 
 def main(argv: Sequence[str] | None = None, environment: Mapping[str, str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m runfold_server")
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=("serve", "rebuild-index", "compact-index"),
+        default="serve",
+    )
+    parser.add_argument(
+        "--actor",
+        help="active direct system_admin username required by rebuild-index",
+    )
     parser.add_argument("--workers", type=int, default=1, help="must remain 1")
     arguments = parser.parse_args(argv)
     env = os.environ if environment is None else environment
@@ -24,6 +35,22 @@ def main(argv: Sequence[str] | None = None, environment: Mapping[str, str] | Non
     try:
         _validate_single_worker(arguments.workers, env)
         settings = load_settings(env)
+        if arguments.command == "rebuild-index":
+            if arguments.actor is None:
+                raise StartupError(
+                    "maintenance_actor_required",
+                    "rebuild-index requires --actor",
+                )
+            asyncio.run(rebuild_index(settings, arguments.actor))
+            return 0
+        if arguments.actor is not None:
+            raise StartupError(
+                "unexpected_maintenance_actor",
+                "--actor is only valid with rebuild-index",
+            )
+        if arguments.command == "compact-index":
+            compact_index(settings)
+            return 0
         application = bootstrap(settings)
     except StartupError as error:
         _LOGGER.error("startup_rejected", extra={"error_code": error.code})

@@ -11,8 +11,23 @@ class EffectiveLimits:
 
 
 @dataclass(frozen=True, slots=True)
+class LimitOverrides:
+    max_documents: int | None
+    max_storage_bytes: int | None
+    monthly_embedding_tokens: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class QuotaUsage:
+    current: int
+    limit: int
+    remaining: int
+
+
+@dataclass(frozen=True, slots=True)
 class UsageSummary:
-    document_count: int
-    storage_bytes: int
-    embedding_tokens: int
-    limits: EffectiveLimits
+    user_id: str
+    month_utc: str
+    documents: QuotaUsage
+    storage_bytes: QuotaUsage
+    embedding_tokens: QuotaUsage

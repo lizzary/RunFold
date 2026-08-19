@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,3 +30,17 @@ class CurrentAccess:
     @property
     def bypass(self) -> bool:
         return "rag.document.bypass_acl" in self.capabilities
+
+
+@dataclass(frozen=True, slots=True)
+class AuditEvent:
+    id: int
+    actor_user_id: str | None
+    action: str
+    decision: str
+    resource_type: str
+    resource_id: str | None
+    reason: str | None
+    request_id: str
+    details: dict[str, Any]
+    created_at: str

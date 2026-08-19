@@ -290,6 +290,86 @@ class KnowledgeRepository:
             ),
         )
 
+    def mark_unusable(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        document_id: str,
+        error_code: str,
+        expected_states: tuple[str, ...],
+        now: str,
+    ) -> None:
+        placeholders = ",".join("?" for _ in expected_states)
+        connection.execute(
+            f"""
+            UPDATE documents
+            SET extracted_characters = 0, chunk_count = 0,
+                index_state = 'failed', index_error = ?, updated_at = ?
+            WHERE id = ? AND index_state IN ({placeholders})
+            """,
+            (error_code, now, document_id, *expected_states),
+        )
+
+    def prepare_rebuild(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        source_document_ids: tuple[str, ...],
+        missing_document_ids: tuple[str, ...],
+        now: str,
+    ) -> None:
+        if source_document_ids:
+            placeholders = ",".join("?" for _ in source_document_ids)
+            connection.execute(
+                f"""
+                UPDATE documents
+                SET index_state = 'indexing', index_error = NULL, updated_at = ?
+                WHERE id IN ({placeholders}) AND index_state IN ('ready', 'failed')
+                """,
+                (now, *source_document_ids),
+            )
+        if missing_document_ids:
+            placeholders = ",".join("?" for _ in missing_document_ids)
+            connection.execute(
+                f"""
+                UPDATE documents
+                SET extracted_characters = 0, chunk_count = 0,
+                    index_state = 'failed', index_error = 'source_missing', updated_at = ?
+                WHERE id IN ({placeholders}) AND index_state IN ('ready', 'failed')
+                """,
+                (now, *missing_document_ids),
+            )
+
+    def replace_index_settings(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        embedding_identity: str,
+        model: str,
+        dimensions: int,
+        chunk_size: int,
+        chunk_overlap: int,
+        now: str,
+    ) -> None:
+        connection.execute("DELETE FROM rag_index_settings")
+        connection.execute(
+            """
+            INSERT INTO rag_index_settings (
+                singleton, embedding_identity, model, dimensions,
+                chunk_size, chunk_overlap, created_at, updated_at
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                embedding_identity,
+                model,
+                dimensions,
+                chunk_size,
+                chunk_overlap,
+                now,
+                now,
+            ),
+        )
+
     def transition_to_deleting(
         self,
         connection: sqlite3.Connection,

@@ -14,15 +14,19 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
+from runfold_server.access_control.audit import AuditService
 from runfold_server.access_control.service import AccessControlService
 from runfold_server.errors import ApiError
 from runfold_server.http.routers.access_control import create_access_control_router
+from runfold_server.http.routers.audit import create_audit_router
 from runfold_server.http.routers.auth import create_auth_router
 from runfold_server.http.routers.documents import create_documents_router
 from runfold_server.http.routers.health import create_health_router
 from runfold_server.http.routers.search import create_search_router
+from runfold_server.http.routers.usage import create_usage_router
 from runfold_server.identity.service import IdentityService
 from runfold_server.knowledge.service import KnowledgeService
+from runfold_server.usage.service import UsageService
 
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _LOGGER = logging.getLogger("runfold_server.http")
@@ -35,6 +39,8 @@ def create_app(
     identity_service: IdentityService | None = None,
     access_control_service: AccessControlService | None = None,
     knowledge_service: KnowledgeService | None = None,
+    usage_service: UsageService | None = None,
+    audit_service: AuditService | None = None,
     shutdown: Callable[[], Awaitable[None]] | None = None,
 ) -> FastAPI:
     @asynccontextmanager
@@ -150,11 +156,17 @@ def create_app(
         app.include_router(
             create_access_control_router(identity_service, access_control_service)
         )
+        if usage_service is not None:
+            app.include_router(create_usage_router(identity_service, usage_service))
+        if audit_service is not None:
+            app.include_router(create_audit_router(identity_service, audit_service))
         if knowledge_service is not None:
             app.include_router(create_documents_router(identity_service, knowledge_service))
             app.include_router(create_search_router(identity_service, knowledge_service))
     elif knowledge_service is not None:
         raise ValueError("Knowledge service requires identity and access-control services")
+    elif usage_service is not None or audit_service is not None:
+        raise ValueError("Usage and audit services require identity and access control")
     return app
 
 

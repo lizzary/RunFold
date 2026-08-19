@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from runfold_server.usage.models import LimitOverrides
+
 
 class UsageRepository:
     def overrides(self, connection: sqlite3.Connection, user_id: str) -> sqlite3.Row | None:
@@ -13,6 +15,45 @@ class UsageRepository:
             """,
             (user_id,),
         ).fetchone()
+
+    def replace_overrides(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        user_id: str,
+        overrides: LimitOverrides,
+        updated_by_user_id: str,
+        now: str,
+    ) -> None:
+        if (
+            overrides.max_documents is None
+            and overrides.max_storage_bytes is None
+            and overrides.monthly_embedding_tokens is None
+        ):
+            connection.execute("DELETE FROM user_limits WHERE user_id = ?", (user_id,))
+            return
+        connection.execute(
+            """
+            INSERT INTO user_limits (
+                user_id, max_documents, max_storage_bytes,
+                monthly_embedding_tokens, updated_by_user_id, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                max_documents = excluded.max_documents,
+                max_storage_bytes = excluded.max_storage_bytes,
+                monthly_embedding_tokens = excluded.monthly_embedding_tokens,
+                updated_by_user_id = excluded.updated_by_user_id,
+                updated_at = excluded.updated_at
+            """,
+            (
+                user_id,
+                overrides.max_documents,
+                overrides.max_storage_bytes,
+                overrides.monthly_embedding_tokens,
+                updated_by_user_id,
+                now,
+            ),
+        )
 
     def document_totals(self, connection: sqlite3.Connection, user_id: str) -> tuple[int, int]:
         row = connection.execute(

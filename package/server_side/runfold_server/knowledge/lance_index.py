@@ -5,7 +5,7 @@ import math
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import lancedb
@@ -105,6 +105,38 @@ class LanceIndex:
     def count_document_rows(self, document_id: str) -> int:
         return int(self._database.open_table(_TABLE).count_rows(_document_predicate(document_id)))
 
+    def count_document_hash_rows(self, document_id: str, content_hash: str) -> int:
+        predicate = (
+            f"{_document_predicate(document_id)} AND content_hash = {_literal(content_hash)}"
+        )
+        return int(self._database.open_table(_TABLE).count_rows(predicate))
+
+    def row_identities(self) -> tuple[tuple[str, str], ...]:
+        rows = (
+            self._database.open_table(_TABLE)
+            .search()
+            .select(["document_id", "content_hash"])
+            .to_list()
+        )
+        identities: set[tuple[str, str]] = set()
+        for row in rows:
+            document_id = row.get("document_id")
+            content_hash = row.get("content_hash")
+            if not isinstance(document_id, str) or not isinstance(content_hash, str):
+                raise RuntimeError("Vector index metadata is invalid")
+            identities.add((document_id, content_hash))
+        return tuple(sorted(identities))
+
+    def delete_identity_now(self, document_id: str, content_hash: str) -> None:
+        self._database.open_table(_TABLE).delete(
+            f"document_id = {_literal(document_id)} AND content_hash = {_literal(content_hash)}"
+        )
+
+    def compact(self) -> None:
+        self._database.open_table(_TABLE).optimize(
+            cleanup_older_than=timedelta(0), delete_unverified=True
+        )
+
     def search(
         self,
         vector: tuple[float, ...],
@@ -165,26 +197,7 @@ def initialize_index(
     configuration: IndexConfiguration,
 ) -> LanceIndex:
     index = LanceIndex(lance_path, configuration.dimensions)
-    with connect(database_path) as connection:
-        current = connection.execute(
-            """
-            SELECT embedding_identity, model, dimensions, chunk_size, chunk_overlap
-            FROM rag_index_settings
-            WHERE singleton = 1
-            """
-        ).fetchone()
-        ready_count = int(
-            connection.execute(
-                "SELECT COUNT(*) FROM documents WHERE index_state = 'ready'"
-            ).fetchone()[0]
-        )
-    settings_match = current is not None and tuple(current) == (
-        configuration.embedding_identity,
-        configuration.model,
-        configuration.dimensions,
-        configuration.chunk_size,
-        configuration.chunk_overlap,
-    )
+    settings_match, ready_count = _configuration_state(database_path, configuration)
     table_match = index.table_is_current()
     if settings_match and table_match:
         return index
@@ -224,9 +237,55 @@ def initialize_index(
     return index
 
 
+def open_current_index(
+    *,
+    database_path: Path,
+    lance_path: Path,
+    configuration: IndexConfiguration,
+) -> LanceIndex:
+    index = LanceIndex(lance_path, configuration.dimensions)
+    settings_match, _ = _configuration_state(database_path, configuration)
+    if not settings_match or not index.table_is_current():
+        raise StartupError(
+            "incompatible_rag_index",
+            "RAG index configuration is incompatible; rebuild the index first",
+        )
+    return index
+
+
+def _configuration_state(
+    database_path: Path, configuration: IndexConfiguration
+) -> tuple[bool, int]:
+    with connect(database_path) as connection:
+        current = connection.execute(
+            """
+            SELECT embedding_identity, model, dimensions, chunk_size, chunk_overlap
+            FROM rag_index_settings
+            WHERE singleton = 1
+            """
+        ).fetchone()
+        ready_count = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM documents WHERE index_state = 'ready'"
+            ).fetchone()[0]
+        )
+    settings_match = current is not None and tuple(current) == (
+        configuration.embedding_identity,
+        configuration.model,
+        configuration.dimensions,
+        configuration.chunk_size,
+        configuration.chunk_overlap,
+    )
+    return settings_match, ready_count
+
+
 def _document_predicate(document_id: str) -> str:
     _validate_document_id(document_id)
     return f"document_id = '{document_id}'"
+
+
+def _literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
 
 
 def _documents_predicate(document_ids: tuple[str, ...]) -> str:
