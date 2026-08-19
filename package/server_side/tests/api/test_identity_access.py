@@ -21,7 +21,7 @@ ADMIN_PASSWORD = "correct horse battery staple"
 
 
 @pytest.fixture
-def m1_client(admin_environment: dict[str, str]) -> tuple[TestClient, Path]:
+def server_client(admin_environment: dict[str, str]) -> tuple[TestClient, Path]:
     settings = load_settings(admin_environment)
     return TestClient(bootstrap(settings)), settings.data_dir / "runfold.sqlite3"
 
@@ -71,9 +71,9 @@ def _create_role(client: TestClient, admin_token: str, name: str) -> dict[str, o
 
 
 def test_bootstrap_login_opaque_session_and_authentication(
-    m1_client: tuple[TestClient, Path],
+    server_client: tuple[TestClient, Path],
 ) -> None:
-    client, database = m1_client
+    client, database = server_client
     token, admin = _login(client, "ADMIN", ADMIN_PASSWORD)
 
     me = client.get("/api/auth/me", headers=_headers(token))
@@ -101,9 +101,9 @@ def test_bootstrap_login_opaque_session_and_authentication(
 
 
 def test_expired_revoked_and_hashed_session_values_are_not_credentials(
-    m1_client: tuple[TestClient, Path],
+    server_client: tuple[TestClient, Path],
 ) -> None:
-    client, database = m1_client
+    client, database = server_client
     token, _ = _login(client, "admin", ADMIN_PASSWORD)
     token_hash = hashlib.sha256(token.encode()).hexdigest()
 
@@ -127,9 +127,9 @@ def test_expired_revoked_and_hashed_session_values_are_not_credentials(
 
 
 def test_login_failure_is_generic_and_audited_without_secrets(
-    m1_client: tuple[TestClient, Path],
+    server_client: tuple[TestClient, Path],
 ) -> None:
-    client, database = m1_client
+    client, database = server_client
     secret = "wrong password value"
 
     missing = client.post(
@@ -152,9 +152,9 @@ def test_login_failure_is_generic_and_audited_without_secrets(
 
 
 def test_password_change_revokes_every_session(
-    m1_client: tuple[TestClient, Path],
+    server_client: tuple[TestClient, Path],
 ) -> None:
-    client, _ = m1_client
+    client, _ = server_client
     first, _ = _login(client, "admin", ADMIN_PASSWORD)
     second, _ = _login(client, "admin", ADMIN_PASSWORD)
     new_password = "new correct horse password"
@@ -176,9 +176,9 @@ def test_password_change_revokes_every_session(
 
 
 def test_permissions_are_reloaded_on_the_next_request(
-    m1_client: tuple[TestClient, Path],
+    server_client: tuple[TestClient, Path],
 ) -> None:
-    client, _ = m1_client
+    client, _ = server_client
     admin_token, _ = _login(client, "admin", ADMIN_PASSWORD)
     user = _create_user(client, admin_token, username="alice")
     role = _create_role(client, admin_token, "user_directory_reader")
@@ -211,9 +211,9 @@ def test_permissions_are_reloaded_on_the_next_request(
 
 
 def test_root_capabilities_require_direct_protected_membership_even_if_database_is_tampered(
-    m1_client: tuple[TestClient, Path],
+    server_client: tuple[TestClient, Path],
 ) -> None:
-    client, database = m1_client
+    client, database = server_client
     admin_token, _ = _login(client, "admin", ADMIN_PASSWORD)
     user = _create_user(client, admin_token, username="mallory")
     role = _create_role(client, admin_token, "ordinary_admin_like_role")
@@ -250,9 +250,9 @@ def test_root_capabilities_require_direct_protected_membership_even_if_database_
 
 
 def test_protected_role_and_last_active_admin_cannot_be_destroyed(
-    m1_client: tuple[TestClient, Path],
+    server_client: tuple[TestClient, Path],
 ) -> None:
-    client, _ = m1_client
+    client, _ = server_client
     admin_token, admin = _login(client, "admin", ADMIN_PASSWORD)
     protected_url = f"/api/access/roles/{SYSTEM_ADMIN_ROLE_ID}"
 
@@ -286,9 +286,9 @@ def test_protected_role_and_last_active_admin_cannot_be_destroyed(
 
 
 def test_admin_reset_revokes_target_sessions_and_user_disable_is_immediate(
-    m1_client: tuple[TestClient, Path],
+    server_client: tuple[TestClient, Path],
 ) -> None:
-    client, _ = m1_client
+    client, _ = server_client
     admin_token, _ = _login(client, "admin", ADMIN_PASSWORD)
     user = _create_user(client, admin_token, username="bob")
     old_password = "another correct password"
@@ -317,9 +317,9 @@ def test_admin_reset_revokes_target_sessions_and_user_disable_is_immediate(
 
 
 def test_access_routes_reject_unknown_fields_and_paginate(
-    m1_client: tuple[TestClient, Path],
+    server_client: tuple[TestClient, Path],
 ) -> None:
-    client, _ = m1_client
+    client, _ = server_client
     admin_token, _ = _login(client, "admin", ADMIN_PASSWORD)
     headers = _headers(admin_token)
 
@@ -342,9 +342,9 @@ def test_access_routes_reject_unknown_fields_and_paginate(
 
 
 def test_every_access_route_denies_a_session_without_required_capabilities(
-    m1_client: tuple[TestClient, Path],
+    server_client: tuple[TestClient, Path],
 ) -> None:
-    client, _ = m1_client
+    client, _ = server_client
     admin_token, admin = _login(client, "admin", ADMIN_PASSWORD)
     user = _create_user(client, admin_token, username="unprivileged")
     role = _create_role(client, admin_token, "denial_target")
@@ -382,9 +382,9 @@ def test_every_access_route_denies_a_session_without_required_capabilities(
 
 
 def test_allowed_role_crud_user_restore_and_logout(
-    m1_client: tuple[TestClient, Path],
+    server_client: tuple[TestClient, Path],
 ) -> None:
-    client, _ = m1_client
+    client, _ = server_client
     token, _ = _login(client, "admin", ADMIN_PASSWORD)
     headers = _headers(token)
     user = _create_user(client, token, username="lifecycle")
@@ -418,27 +418,41 @@ def test_allowed_role_crud_user_restore_and_logout(
     assert client.get("/api/auth/me", headers=headers).status_code == 401
 
 
-def test_bootstrapped_openapi_contains_m4_and_no_future_routes(
-    m1_client: tuple[TestClient, Path],
+def test_bootstrapped_openapi_matches_final_http_contract(
+    server_client: tuple[TestClient, Path],
 ) -> None:
-    client, _ = m1_client
-    paths = set(client.app.openapi()["paths"])
+    client, _ = server_client
+    schema = client.app.openapi()
+    methods_by_path = {
+        path: set(operations).intersection({"get", "post", "put", "patch", "delete"})
+        for path, operations in schema["paths"].items()
+    }
 
-    assert "/api/auth/login" in paths
-    assert "/api/access/users/{user_id}/roles" in paths
-    assert "/api/access/roles/{role_id}/capabilities" in paths
-    assert "/api/rag/documents" in paths
-    assert "/api/rag/documents/{document_id}/acl" in paths
-    assert "/api/rag/search" in paths
-    assert "/api/usage/me" in paths
-    assert "/api/usage/users/{user_id}/limits" in paths
-    assert "/api/security/audit" in paths
-    assert not any(
-        forbidden in path
-        for path in paths
-            for forbidden in (
-                "/agent",
-            "/tools",
-            "/skills",
-        )
-    )
+    assert schema["info"]["version"] == "unversioned"
+    assert methods_by_path == {
+        "/health/live": {"get"},
+        "/health/ready": {"get"},
+        "/api/auth/login": {"post"},
+        "/api/auth/logout": {"post"},
+        "/api/auth/me": {"get"},
+        "/api/auth/password": {"put"},
+        "/api/access/capabilities": {"get"},
+        "/api/access/users": {"get", "post"},
+        "/api/access/users/{user_id}": {"get", "patch"},
+        "/api/access/users/{user_id}/password": {"put"},
+        "/api/access/users/{user_id}/roles": {"get", "put"},
+        "/api/access/roles": {"get", "post"},
+        "/api/access/roles/{role_id}": {"get", "patch", "delete"},
+        "/api/access/roles/{role_id}/capabilities": {"put"},
+        "/api/rag/documents": {"get", "post"},
+        "/api/rag/documents/{document_id}": {"get", "patch", "delete"},
+        "/api/rag/documents/{document_id}/content": {"get", "put"},
+        "/api/rag/documents/{document_id}/text": {"get", "put"},
+        "/api/rag/documents/{document_id}/reindex": {"post"},
+        "/api/rag/documents/{document_id}/acl": {"get", "put"},
+        "/api/rag/search": {"post"},
+        "/api/usage/me": {"get"},
+        "/api/usage/users/{user_id}": {"get"},
+        "/api/usage/users/{user_id}/limits": {"put"},
+        "/api/security/audit": {"get"},
+    }
