@@ -65,3 +65,31 @@ class DocumentText:
     document_id: str
     text: str
     content_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class SearchableDocument:
+    id: str
+    title: str
+    content_hash: str
+    chunk_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class IndexSearchHit:
+    document_id: str
+    chunk_id: str
+    ordinal: int
+    content_hash: str
+    text: str
+    distance: float
+
+
+@dataclass(frozen=True, slots=True)
+class SearchResult:
+    document_id: str
+    title: str
+    ordinal: int
+    content_hash: str
+    text: str
+    distance: float

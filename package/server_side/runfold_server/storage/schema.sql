@@ -107,6 +107,7 @@ CREATE TABLE usage_monthly (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     month_utc TEXT NOT NULL,
     embedding_tokens INTEGER NOT NULL DEFAULT 0 CHECK (embedding_tokens >= 0),
+    search_requests INTEGER NOT NULL DEFAULT 0 CHECK (search_requests >= 0),
     uploads INTEGER NOT NULL DEFAULT 0 CHECK (uploads >= 0),
     updated_at TEXT NOT NULL,
     PRIMARY KEY (user_id, month_utc)

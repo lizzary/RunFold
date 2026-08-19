@@ -11,6 +11,7 @@ from pypdf import PdfWriter
 from runfold_server.errors import ApiError
 from runfold_server.knowledge.chunker import chunk_text
 from runfold_server.knowledge.extractors import DOCX, PDF, extract_text, media_type_for
+from runfold_server.knowledge.lance_index import LanceIndex
 from runfold_server.llm.openai_embeddings import OpenAIEmbeddingsClient
 
 
@@ -142,3 +143,29 @@ def test_embedding_client_validates_order_dimensions_finiteness_and_usage() -> N
             assert error.value.code == "invalid_embedding_response"
 
     asyncio.run(run())
+
+
+def test_lance_search_prefilters_each_batch_and_merges_global_nearest_hits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first_id = "00000000-0000-4000-8000-000000000101"
+    second_id = "00000000-0000-4000-8000-000000000102"
+    first_chunks = chunk_text("first", size=20, overlap=0)
+    second_chunks = chunk_text("second", size=20, overlap=0)
+    index = LanceIndex(tmp_path / "lance-search", 2)
+    index.recreate()
+    asyncio.run(
+        index.replace_document(first_id, "1" * 64, first_chunks, ((1.0, 0.0),))
+    )
+    asyncio.run(
+        index.replace_document(second_id, "2" * 64, second_chunks, ((0.0, 1.0),))
+    )
+    monkeypatch.setattr("runfold_server.knowledge.lance_index._FILTER_BATCH_SIZE", 1)
+
+    hits = index.search(
+        (0.0, 1.0), document_ids=(first_id, second_id), top_k=1
+    )
+
+    assert len(hits) == 1
+    assert hits[0].document_id == second_id
+    assert hits[0].text == "second"

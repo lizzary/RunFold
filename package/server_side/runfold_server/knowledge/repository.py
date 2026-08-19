@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 from runfold_server.access_control.models import CurrentAccess
-from runfold_server.knowledge.models import AclGrant, Document
+from runfold_server.knowledge.models import AclGrant, Document, SearchableDocument
 
 
 class KnowledgeRepository:
@@ -147,6 +147,40 @@ class KnowledgeRepository:
                 (*states, *acl_values),
             ).fetchone()
         return int(row[0])
+
+    def searchable_authorized(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        access: CurrentAccess,
+        document_ids: tuple[str, ...] | None = None,
+    ) -> tuple[SearchableDocument, ...]:
+        if document_ids is not None and not document_ids:
+            return ()
+        scope_sql = ""
+        scope_values: tuple[object, ...] = ()
+        if document_ids is not None:
+            placeholders = ",".join("?" for _ in document_ids)
+            scope_sql = f"AND d.id IN ({placeholders})"
+            scope_values = document_ids
+        if access.bypass:
+            sql = f"""
+                SELECT d.id, d.title, d.content_hash, d.chunk_count
+                FROM documents AS d
+                WHERE d.index_state = 'ready' {scope_sql}
+                ORDER BY d.id
+            """
+            values = scope_values
+        else:
+            acl_sql, acl_values = _acl_exists(access, 10)
+            sql = f"""
+                SELECT d.id, d.title, d.content_hash, d.chunk_count
+                FROM documents AS d
+                WHERE d.index_state = 'ready' AND {acl_sql} {scope_sql}
+                ORDER BY d.id
+            """
+            values = (*acl_values, *scope_values)
+        return tuple(_searchable_document(row) for row in connection.execute(sql, values))
 
     def update_title(
         self, connection: sqlite3.Connection, document_id: str, title: str, now: str
@@ -391,4 +425,13 @@ def _document(row: sqlite3.Row | None) -> Document | None:
         index_error=None if row["index_error"] is None else str(row["index_error"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
+    )
+
+
+def _searchable_document(row: sqlite3.Row) -> SearchableDocument:
+    return SearchableDocument(
+        id=str(row["id"]),
+        title=str(row["title"]),
+        content_hash=str(row["content_hash"]),
+        chunk_count=int(row["chunk_count"]),
     )

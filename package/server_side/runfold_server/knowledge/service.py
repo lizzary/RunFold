@@ -15,6 +15,7 @@ from runfold_server.access_control.capabilities import (
     RAG_DOCUMENT_READ,
     RAG_DOCUMENT_UPDATE,
     RAG_DOCUMENT_UPLOAD,
+    RAG_SEARCH,
 )
 from runfold_server.access_control.models import CurrentAccess
 from runfold_server.errors import ApiError
@@ -22,7 +23,7 @@ from runfold_server.identity.models import VerifiedIdentity
 from runfold_server.identity.service import IdentityService
 from runfold_server.knowledge.access_policy import KnowledgeAccessPolicy
 from runfold_server.knowledge.chunker import chunk_text
-from runfold_server.knowledge.lance_index import LanceIndex
+from runfold_server.knowledge.lance_index import LanceIndex, UnsafeIndexResult
 from runfold_server.knowledge.models import (
     EDIT,
     MANAGE,
@@ -31,6 +32,7 @@ from runfold_server.knowledge.models import (
     Document,
     DocumentContent,
     DocumentText,
+    SearchResult,
     StagedDocument,
 )
 from runfold_server.knowledge.object_store import AsyncReadable, ObjectStore
@@ -40,6 +42,10 @@ from runfold_server.storage.sqlite import connect
 from runfold_server.usage.service import UsageService
 
 _VISIBLE_STATES = ("ready", "failed")
+_SEARCH_CAPABILITIES = frozenset({RAG_SEARCH, RAG_DOCUMENT_READ})
+_MAX_SEARCH_QUERY_CHARACTERS = 10_000
+_MAX_SEARCH_SCOPE = 1_000
+_MAX_TOP_K = 100
 
 
 class KnowledgeService:
@@ -197,6 +203,157 @@ class KnowledgeService:
                     states=_VISIBLE_STATES,
                 ),
             )
+
+    async def search(
+        self,
+        actor: VerifiedIdentity,
+        *,
+        query: str,
+        top_k: int,
+        document_ids: tuple[str, ...] | None,
+    ) -> tuple[SearchResult, ...]:
+        authorized_count = 0
+        bypass_used = False
+        try:
+            with connect(self._database_path) as connection:
+                connection.execute("BEGIN")
+                current, access = self._current_access(
+                    connection, actor, _SEARCH_CAPABILITIES
+                )
+                normalized_query = _search_query(query)
+                _validate_search_limit(top_k)
+                _validate_search_scope(document_ids)
+                bypass_used = access.bypass
+                authorized = self._repository.searchable_authorized(
+                    connection, access=access
+                )
+                authorized_count = len(authorized)
+                authorized_by_id = {document.id: document for document in authorized}
+                if document_ids is None:
+                    selected_ids = tuple(authorized_by_id)
+                else:
+                    if any(document_id not in authorized_by_id for document_id in document_ids):
+                        raise ApiError(404, "document_not_found", "Document not found")
+                    selected_ids = tuple(dict.fromkeys(document_ids))
+                selected_by_id = {
+                    document_id: authorized_by_id[document_id]
+                    for document_id in selected_ids
+                }
+                if not selected_ids:
+                    now = _now()
+                    self._usage.record_search(connection, current.user_id, now)
+                    self._record_search_audit(
+                        connection,
+                        actor=current,
+                        decision="allowed",
+                        reason=None,
+                        authorized_count=authorized_count,
+                        reference_ids=(),
+                        result_count=0,
+                        bypass_used=bypass_used,
+                        now=now,
+                    )
+                    return ()
+                self._usage.require_embedding_capacity(
+                    connection, user_id=current.user_id
+                )
+
+            embedded = await self._embeddings.embed((normalized_query,))
+            self._usage.record_embedding_tokens(actor.user_id, embedded.total_tokens)
+            hits = self._index.search(
+                embedded.vectors[0], document_ids=selected_ids, top_k=top_k
+            )
+
+            with connect(self._database_path) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                current, access = self._current_access(
+                    connection, actor, _SEARCH_CAPABILITIES
+                )
+                current_documents = self._repository.searchable_authorized(
+                    connection,
+                    access=access,
+                    document_ids=selected_ids,
+                )
+                current_by_id = {
+                    document.id: document for document in current_documents
+                }
+                suspect_ids = tuple(
+                    document_id
+                    for document_id, expected in selected_by_id.items()
+                    if document_id not in current_by_id
+                    or current_by_id[document_id].content_hash != expected.content_hash
+                )
+                if suspect_ids:
+                    raise UnsafeIndexResult(suspect_ids)
+
+                results: list[SearchResult] = []
+                for hit in hits:
+                    expected = selected_by_id.get(hit.document_id)
+                    document = current_by_id.get(hit.document_id)
+                    if (
+                        expected is None
+                        or document is None
+                        or hit.content_hash != expected.content_hash
+                        or hit.content_hash != document.content_hash
+                        or hit.ordinal >= document.chunk_count
+                    ):
+                        raise UnsafeIndexResult((hit.document_id,))
+                    results.append(
+                        SearchResult(
+                            document_id=document.id,
+                            title=document.title,
+                            ordinal=hit.ordinal,
+                            content_hash=document.content_hash,
+                            text=hit.text,
+                            distance=hit.distance,
+                        )
+                    )
+
+                now = _now()
+                references = tuple(sorted({result.document_id for result in results}))
+                self._usage.record_search(connection, current.user_id, now)
+                self._record_search_audit(
+                    connection,
+                    actor=current,
+                    decision="allowed",
+                    reason=None,
+                    authorized_count=authorized_count,
+                    reference_ids=references,
+                    result_count=len(results),
+                    bypass_used=bypass_used,
+                    now=now,
+                )
+                return tuple(results)
+        except UnsafeIndexResult as error:
+            self._record_search_denied(
+                actor,
+                reason="unsafe_index_result",
+                authorized_count=authorized_count,
+                bypass_used=bypass_used,
+                suspect_ids=error.document_ids,
+            )
+            raise ApiError(
+                503,
+                "unsafe_index_result",
+                "Search results failed security validation",
+            ) from None
+        except ApiError as error:
+            self._record_search_denied(
+                actor,
+                reason=error.code,
+                authorized_count=authorized_count,
+                bypass_used=bypass_used,
+                quota=error.details.get("quota"),
+            )
+            raise
+        except Exception as error:
+            self._record_search_denied(
+                actor,
+                reason="rag_search_failed",
+                authorized_count=authorized_count,
+                bypass_used=bypass_used,
+            )
+            raise ApiError(503, "rag_search_failed", "RAG search failed") from error
 
     def get_document(self, actor: VerifiedIdentity, document_id: str) -> Document:
         return self._read_authorized(actor, document_id, states=_VISIBLE_STATES)
@@ -769,6 +926,70 @@ class KnowledgeService:
         )
         connection.commit()
 
+    def _record_search_audit(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        actor: VerifiedIdentity,
+        decision: str,
+        reason: str | None,
+        authorized_count: int,
+        reference_ids: tuple[str, ...],
+        result_count: int,
+        bypass_used: bool,
+        now: str,
+        suspect_ids: tuple[str, ...] = (),
+        quota: object = None,
+    ) -> None:
+        details: dict[str, object] = {
+            "authorized_count": authorized_count,
+            "bypass_used": bypass_used,
+            "reference_ids": list(reference_ids),
+            "result_count": result_count,
+        }
+        if suspect_ids:
+            details["suspect_ids"] = list(suspect_ids)
+        if isinstance(quota, str):
+            details["quota"] = quota
+        self._audit.record(
+            connection,
+            actor_user_id=actor.user_id,
+            action="rag.search",
+            decision=decision,
+            resource_type="search",
+            resource_id=None,
+            reason=reason,
+            request_id=actor.context.request_id,
+            details=details,
+            now=now,
+        )
+
+    def _record_search_denied(
+        self,
+        actor: VerifiedIdentity,
+        *,
+        reason: str,
+        authorized_count: int,
+        bypass_used: bool,
+        suspect_ids: tuple[str, ...] = (),
+        quota: object = None,
+    ) -> None:
+        with connect(self._database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._record_search_audit(
+                connection,
+                actor=actor,
+                decision="denied",
+                reason=reason,
+                authorized_count=authorized_count,
+                reference_ids=(),
+                result_count=0,
+                bypass_used=bypass_used,
+                suspect_ids=suspect_ids,
+                quota=quota,
+                now=_now(),
+            )
+
 
 def _title(value: str) -> str:
     normalized = value.strip()
@@ -779,6 +1000,25 @@ def _title(value: str) -> str:
     ):
         raise ApiError(422, "invalid_document_title", "Document title is invalid")
     return normalized
+
+
+def _search_query(value: str) -> str:
+    normalized = value.strip()
+    if not normalized or len(normalized) > _MAX_SEARCH_QUERY_CHARACTERS:
+        raise ApiError(422, "invalid_search_query", "Search query is invalid")
+    return normalized
+
+
+def _validate_search_limit(top_k: int) -> None:
+    if isinstance(top_k, bool) or top_k < 1 or top_k > _MAX_TOP_K:
+        raise ApiError(422, "invalid_search_limit", "Search limit is invalid")
+
+
+def _validate_search_scope(document_ids: tuple[str, ...] | None) -> None:
+    if document_ids is None:
+        return
+    if not document_ids or len(document_ids) > _MAX_SEARCH_SCOPE:
+        raise ApiError(422, "invalid_document_scope", "Document scope is invalid")
 
 
 def _validate_grants(grants: tuple[AclGrant, ...]) -> None:

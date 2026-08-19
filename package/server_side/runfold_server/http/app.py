@@ -20,6 +20,7 @@ from runfold_server.http.routers.access_control import create_access_control_rou
 from runfold_server.http.routers.auth import create_auth_router
 from runfold_server.http.routers.documents import create_documents_router
 from runfold_server.http.routers.health import create_health_router
+from runfold_server.http.routers.search import create_search_router
 from runfold_server.identity.service import IdentityService
 from runfold_server.knowledge.service import KnowledgeService
 
@@ -151,6 +152,7 @@ def create_app(
         )
         if knowledge_service is not None:
             app.include_router(create_documents_router(identity_service, knowledge_service))
+            app.include_router(create_search_router(identity_service, knowledge_service))
     elif knowledge_service is not None:
         raise ValueError("Knowledge service requires identity and access-control services")
     return app

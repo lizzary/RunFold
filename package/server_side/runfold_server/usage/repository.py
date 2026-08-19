@@ -50,8 +50,8 @@ class UsageRepository:
         connection.execute(
             """
             INSERT INTO usage_monthly (
-                user_id, month_utc, embedding_tokens, uploads, updated_at
-            ) VALUES (?, ?, ?, 0, ?)
+                user_id, month_utc, embedding_tokens, search_requests, uploads, updated_at
+            ) VALUES (?, ?, ?, 0, 0, ?)
             ON CONFLICT(user_id, month_utc) DO UPDATE SET
                 embedding_tokens = embedding_tokens + excluded.embedding_tokens,
                 updated_at = excluded.updated_at
@@ -70,10 +70,30 @@ class UsageRepository:
         connection.execute(
             """
             INSERT INTO usage_monthly (
-                user_id, month_utc, embedding_tokens, uploads, updated_at
-            ) VALUES (?, ?, 0, 1, ?)
+                user_id, month_utc, embedding_tokens, search_requests, uploads, updated_at
+            ) VALUES (?, ?, 0, 0, 1, ?)
             ON CONFLICT(user_id, month_utc) DO UPDATE SET
                 uploads = uploads + 1,
+                updated_at = excluded.updated_at
+            """,
+            (user_id, month_utc, now),
+        )
+
+    def add_search_request(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        user_id: str,
+        month_utc: str,
+        now: str,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO usage_monthly (
+                user_id, month_utc, embedding_tokens, search_requests, uploads, updated_at
+            ) VALUES (?, ?, 0, 1, 0, ?)
+            ON CONFLICT(user_id, month_utc) DO UPDATE SET
+                search_requests = search_requests + 1,
                 updated_at = excluded.updated_at
             """,
             (user_id, month_utc, now),

@@ -101,6 +101,11 @@ class UsageService:
             connection, user_id=user_id, month_utc=_month_utc(), now=now
         )
 
+    def record_search(self, connection: sqlite3.Connection, user_id: str, now: str) -> None:
+        self._repository.add_search_request(
+            connection, user_id=user_id, month_utc=_month_utc(), now=now
+        )
+
     def summary(self, user_id: str) -> UsageSummary:
         with connect(self._database_path) as connection:
             documents, storage = self._repository.document_totals(connection, user_id)
