@@ -10,7 +10,7 @@ from runfold_server.access_control.audit import AuditRepository, AuditService
 from runfold_server.access_control.authorization import AuthorizationService
 from runfold_server.access_control.repository import AccessControlRepository
 from runfold_server.access_control.service import AccessControlService
-from runfold_server.config import Settings, load_settings
+from runfold_server.config import Settings
 from runfold_server.http.app import create_app
 from runfold_server.identity.passwords import Argon2PasswordHasher
 from runfold_server.identity.repository import IdentityRepository
@@ -44,8 +44,8 @@ from runfold_server.usage.service import UsageService
 _LOGGER = logging.getLogger("runfold_server.bootstrap")
 
 
-def bootstrap(settings: Settings | None = None) -> FastAPI:
-    current_settings = load_settings() if settings is None else settings
+def bootstrap(settings: Settings) -> FastAPI:
+    current_settings = settings
     paths = initialize_data_paths(current_settings.data_dir)
     initialize_database(paths.database)
     audit_repository = AuditRepository()

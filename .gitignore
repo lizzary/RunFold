@@ -4,3 +4,4 @@
 **/.pytest_cache/
 **/.ruff_cache/
 **/.pytest-tmp/
+/package/server_side/config.yaml

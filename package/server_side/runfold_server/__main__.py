@@ -3,8 +3,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
+from pathlib import Path
 
 import uvicorn
 
@@ -16,7 +16,7 @@ from runfold_server.observability import configure_logging
 _LOGGER = logging.getLogger("runfold_server")
 
 
-def main(argv: Sequence[str] | None = None, environment: Mapping[str, str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m runfold_server")
     parser.add_argument(
         "command",
@@ -25,16 +25,21 @@ def main(argv: Sequence[str] | None = None, environment: Mapping[str, str] | Non
         default="serve",
     )
     parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path("config.yaml"),
+        help="YAML configuration file (default: ./config.yaml)",
+    )
+    parser.add_argument(
         "--actor",
         help="active direct system_admin username required by rebuild-index",
     )
     parser.add_argument("--workers", type=int, default=1, help="must remain 1")
     arguments = parser.parse_args(argv)
-    env = os.environ if environment is None else environment
     configure_logging()
     try:
-        _validate_single_worker(arguments.workers, env)
-        settings = load_settings(env)
+        _validate_single_worker(arguments.workers)
+        settings = load_settings(arguments.config)
         if arguments.command == "rebuild-index":
             if arguments.actor is None:
                 raise StartupError(
@@ -69,16 +74,8 @@ def main(argv: Sequence[str] | None = None, environment: Mapping[str, str] | Non
     return 0
 
 
-def _validate_single_worker(workers: int, environment: Mapping[str, str]) -> None:
-    configured = [str(workers)]
-    for name in ("UVICORN_WORKERS", "WEB_CONCURRENCY"):
-        if name in environment:
-            configured.append(environment[name])
-    try:
-        counts = [int(value) for value in configured]
-    except ValueError as error:
-        raise StartupError("invalid_worker_count", "Worker count must be exactly 1") from error
-    if any(count != 1 for count in counts):
+def _validate_single_worker(workers: int) -> None:
+    if workers != 1:
         raise StartupError("single_worker_required", "RunFold requires exactly one worker")
 
 

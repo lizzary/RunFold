@@ -5,10 +5,10 @@ from pathlib import Path
 
 import lancedb
 import pytest
+from conftest import ConfigFile
 from fastapi.testclient import TestClient
 
 from runfold_server.bootstrap import bootstrap
-from runfold_server.config import load_settings
 from runfold_server.knowledge.lance_index import LanceIndex
 from runfold_server.llm.openai_embeddings import EmbeddingBatch, OpenAIEmbeddingsClient
 
@@ -18,7 +18,7 @@ READER_ROLE_ID = "00000000-0000-4000-8000-000000000004"
 
 @pytest.fixture
 def document_client(
-    admin_environment: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    admin_config: ConfigFile, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[TestClient, Path]:
     async def embed(
         self: OpenAIEmbeddingsClient, values: tuple[str, ...]
@@ -29,7 +29,7 @@ def document_client(
         return EmbeddingBatch(vectors=vectors, total_tokens=len(values) * 3)
 
     monkeypatch.setattr(OpenAIEmbeddingsClient, "embed", embed)
-    settings = load_settings(admin_environment)
+    settings = admin_config.load()
     return TestClient(bootstrap(settings)), settings.data_dir
 
 

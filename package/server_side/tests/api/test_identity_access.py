@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+from conftest import ConfigFile
 from fastapi.testclient import TestClient
 
 from runfold_server.access_control.capabilities import (
@@ -14,15 +15,14 @@ from runfold_server.access_control.capabilities import (
     SYSTEM_ADMIN_ROLE_ID,
 )
 from runfold_server.bootstrap import bootstrap
-from runfold_server.config import load_settings
 from runfold_server.storage.sqlite import connect
 
 ADMIN_PASSWORD = "correct horse battery staple"
 
 
 @pytest.fixture
-def server_client(admin_environment: dict[str, str]) -> tuple[TestClient, Path]:
-    settings = load_settings(admin_environment)
+def server_client(admin_config: ConfigFile) -> tuple[TestClient, Path]:
+    settings = admin_config.load()
     return TestClient(bootstrap(settings)), settings.data_dir / "runfold.sqlite3"
 
 

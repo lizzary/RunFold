@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-import os
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
+
+import yaml
 
 from runfold_server.errors import StartupError
 
@@ -36,55 +39,133 @@ class Settings:
     default_monthly_embedding_tokens: int
 
 
-def load_settings(environment: Mapping[str, str] | None = None) -> Settings:
-    env = os.environ if environment is None else environment
-
-    host = env.get("RUNFOLD_HOST", "127.0.0.1").strip()
-    if not host or any(character.isspace() for character in host):
-        raise _invalid("RUNFOLD_HOST", "must be a non-empty host without whitespace")
-
-    port = _integer(env, "RUNFOLD_PORT", default="8000", minimum=1, maximum=65535)
-    data_dir_text = _required(env, "RUNFOLD_DATA_DIR")
-    data_dir = Path(data_dir_text).expanduser()
-    if not data_dir.is_absolute():
-        raise _invalid("RUNFOLD_DATA_DIR", "must be an absolute path")
-    data_dir = data_dir.resolve(strict=False)
-    if data_dir == Path(data_dir.anchor):
-        raise _invalid("RUNFOLD_DATA_DIR", "must not be a filesystem root")
-
-    allowed_origins = _origins(_required(env, "RUNFOLD_ALLOWED_ORIGINS"))
-    openai_base_url = _base_url(_required(env, "RUNFOLD_OPENAI_BASE_URL"))
-    openai_api_key = _required(env, "RUNFOLD_OPENAI_API_KEY", allow_empty=True)
-    embedding_model = _required(env, "RUNFOLD_EMBEDDING_MODEL")
-
-    embedding_dimensions = _integer(env, "RUNFOLD_EMBEDDING_DIMENSIONS")
-    embed_batch_size = _integer(env, "RUNFOLD_EMBED_BATCH_SIZE")
-    llm_timeout_seconds = _number(env, "RUNFOLD_LLM_TIMEOUT_SECONDS")
-    llm_max_retries = _integer(env, "RUNFOLD_LLM_MAX_RETRIES", minimum=0)
-    chunk_size = _integer(env, "RUNFOLD_CHUNK_SIZE")
-    chunk_overlap = _integer(env, "RUNFOLD_CHUNK_OVERLAP", minimum=0)
-    if chunk_overlap >= chunk_size:
-        raise _invalid("RUNFOLD_CHUNK_OVERLAP", "must be smaller than RUNFOLD_CHUNK_SIZE")
-
-    upload_max_bytes = _integer(env, "RUNFOLD_UPLOAD_MAX_BYTES")
-    extract_max_characters = _integer(env, "RUNFOLD_EXTRACT_MAX_CHARACTERS")
-    pdf_max_pages = _integer(env, "RUNFOLD_PDF_MAX_PAGES")
-    docx_max_uncompressed_bytes = _integer(env, "RUNFOLD_DOCX_MAX_UNCOMPRESSED_BYTES")
-    session_ttl_seconds = _integer(env, "RUNFOLD_SESSION_TTL_SECONDS")
-    default_max_documents = _integer(env, "RUNFOLD_DEFAULT_MAX_DOCUMENTS")
-    default_max_storage_bytes = _integer(env, "RUNFOLD_DEFAULT_MAX_STORAGE_BYTES")
-    default_monthly_embedding_tokens = _integer(
-        env, "RUNFOLD_DEFAULT_MONTHLY_EMBEDDING_TOKENS"
+def load_settings(path: str | Path) -> Settings:
+    document = _load_yaml(Path(path))
+    _reject_unknown(
+        document,
+        {"server", "data", "cors", "provider", "rag", "auth", "limits"},
+        "configuration",
     )
 
-    admin_username = _optional(env, "RUNFOLD_BOOTSTRAP_ADMIN_USERNAME")
-    admin_password = _optional(env, "RUNFOLD_BOOTSTRAP_ADMIN_PASSWORD")
-    if (admin_username is None) != (admin_password is None):
-        raise StartupError(
-            "invalid_configuration",
-            "RUNFOLD_BOOTSTRAP_ADMIN_USERNAME and RUNFOLD_BOOTSTRAP_ADMIN_PASSWORD "
-            "must be provided together",
-        )
+    server = _optional_mapping(document, "server", "server")
+    data = _required_mapping(document, "data", "data")
+    cors = _required_mapping(document, "cors", "cors")
+    provider = _required_mapping(document, "provider", "provider")
+    rag = _required_mapping(document, "rag", "rag")
+    auth = _required_mapping(document, "auth", "auth")
+    limits = _required_mapping(document, "limits", "limits")
+
+    _reject_unknown(server, {"host", "port"}, "server")
+    _reject_unknown(data, {"directory"}, "data")
+    _reject_unknown(cors, {"allowed_origins"}, "cors")
+    _reject_unknown(
+        provider,
+        {
+            "base_url",
+            "api_key",
+            "embedding_model",
+            "embedding_dimensions",
+            "embed_batch_size",
+            "timeout_seconds",
+            "max_retries",
+        },
+        "provider",
+    )
+    _reject_unknown(
+        rag,
+        {
+            "chunk_size",
+            "chunk_overlap",
+            "upload_max_bytes",
+            "extract_max_characters",
+            "pdf_max_pages",
+            "docx_max_uncompressed_bytes",
+        },
+        "rag",
+    )
+    _reject_unknown(auth, {"session_ttl_seconds", "bootstrap_admin"}, "auth")
+    _reject_unknown(
+        limits,
+        {
+            "default_max_documents",
+            "default_max_storage_bytes",
+            "default_monthly_embedding_tokens",
+        },
+        "limits",
+    )
+
+    host = _optional_string(server, "host", "server.host", default="127.0.0.1")
+    if any(character.isspace() for character in host):
+        raise _invalid("server.host", "must not contain whitespace")
+    port = _optional_integer(server, "port", "server.port", default=8000, maximum=65535)
+
+    data_dir = Path(_required_string(data, "directory", "data.directory"))
+    if not data_dir.is_absolute():
+        raise _invalid("data.directory", "must be an absolute path")
+    data_dir = data_dir.resolve(strict=False)
+    if data_dir == Path(data_dir.anchor):
+        raise _invalid("data.directory", "must not be a filesystem root")
+
+    allowed_origins = _origins(_required(cors, "allowed_origins", "cors.allowed_origins"))
+    openai_base_url = _base_url(
+        _required_string(provider, "base_url", "provider.base_url")
+    )
+    openai_api_key = _required_string(
+        provider, "api_key", "provider.api_key", allow_empty=True
+    )
+    embedding_model = _required_string(
+        provider, "embedding_model", "provider.embedding_model"
+    )
+    embedding_dimensions = _required_integer(
+        provider, "embedding_dimensions", "provider.embedding_dimensions"
+    )
+    embed_batch_size = _required_integer(
+        provider, "embed_batch_size", "provider.embed_batch_size"
+    )
+    llm_timeout_seconds = _required_number(
+        provider, "timeout_seconds", "provider.timeout_seconds"
+    )
+    llm_max_retries = _required_integer(
+        provider, "max_retries", "provider.max_retries", minimum=0
+    )
+
+    chunk_size = _required_integer(rag, "chunk_size", "rag.chunk_size")
+    chunk_overlap = _required_integer(
+        rag, "chunk_overlap", "rag.chunk_overlap", minimum=0
+    )
+    if chunk_overlap >= chunk_size:
+        raise _invalid("rag.chunk_overlap", "must be smaller than rag.chunk_size")
+
+    upload_max_bytes = _required_integer(
+        rag, "upload_max_bytes", "rag.upload_max_bytes"
+    )
+    extract_max_characters = _required_integer(
+        rag, "extract_max_characters", "rag.extract_max_characters"
+    )
+    pdf_max_pages = _required_integer(rag, "pdf_max_pages", "rag.pdf_max_pages")
+    docx_max_uncompressed_bytes = _required_integer(
+        rag,
+        "docx_max_uncompressed_bytes",
+        "rag.docx_max_uncompressed_bytes",
+    )
+    session_ttl_seconds = _required_integer(
+        auth, "session_ttl_seconds", "auth.session_ttl_seconds"
+    )
+    admin_username, admin_password = _bootstrap_admin(auth)
+
+    default_max_documents = _required_integer(
+        limits, "default_max_documents", "limits.default_max_documents"
+    )
+    default_max_storage_bytes = _required_integer(
+        limits,
+        "default_max_storage_bytes",
+        "limits.default_max_storage_bytes",
+    )
+    default_monthly_embedding_tokens = _required_integer(
+        limits,
+        "default_monthly_embedding_tokens",
+        "limits.default_monthly_embedding_tokens",
+    )
 
     return Settings(
         host=host,
@@ -113,68 +194,154 @@ def load_settings(environment: Mapping[str, str] | None = None) -> Settings:
     )
 
 
-def _required(env: Mapping[str, str], name: str, *, allow_empty: bool = False) -> str:
-    if name not in env:
-        raise _invalid(name, "is required")
-    value = env[name]
-    if not allow_empty and not value.strip():
-        raise _invalid(name, "must not be empty")
-    return value if allow_empty else value.strip()
-
-
-def _optional(env: Mapping[str, str], name: str) -> str | None:
-    if name not in env:
-        return None
-    value = env[name].strip()
-    if not value:
-        raise _invalid(name, "must not be empty when provided")
+def _load_yaml(path: Path) -> dict[str, Any]:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise _invalid("configuration file", "does not exist") from None
+    except OSError as error:
+        raise _invalid("configuration file", "cannot be read") from error
+    try:
+        value = yaml.safe_load(content)
+    except yaml.YAMLError as error:
+        raise _invalid("configuration file", "is not valid YAML") from error
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+        raise _invalid("configuration", "must be a YAML mapping with string keys")
     return value
 
 
-def _integer(
-    env: Mapping[str, str],
+def _required(mapping: Mapping[str, Any], name: str, field_name: str) -> Any:
+    if name not in mapping:
+        raise _invalid(field_name, "is required")
+    return mapping[name]
+
+
+def _required_mapping(
+    mapping: Mapping[str, Any], name: str, field_name: str
+) -> dict[str, Any]:
+    return _mapping(_required(mapping, name, field_name), field_name)
+
+
+def _optional_mapping(
+    mapping: Mapping[str, Any], name: str, field_name: str
+) -> dict[str, Any]:
+    return {} if name not in mapping else _mapping(mapping[name], field_name)
+
+
+def _mapping(value: Any, field_name: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+        raise _invalid(field_name, "must be a YAML mapping with string keys")
+    return value
+
+
+def _required_string(
+    mapping: Mapping[str, Any],
     name: str,
+    field_name: str,
     *,
-    default: str | None = None,
+    allow_empty: bool = False,
+) -> str:
+    value = _required(mapping, name, field_name)
+    if not isinstance(value, str):
+        raise _invalid(field_name, "must be a string")
+    if not allow_empty and not value.strip():
+        raise _invalid(field_name, "must not be empty")
+    return value if allow_empty else value.strip()
+
+
+def _optional_string(
+    mapping: Mapping[str, Any], name: str, field_name: str, *, default: str
+) -> str:
+    if name not in mapping:
+        return default
+    return _required_string(mapping, name, field_name)
+
+
+def _required_integer(
+    mapping: Mapping[str, Any],
+    name: str,
+    field_name: str,
+    *,
     minimum: int = 1,
     maximum: int | None = None,
 ) -> int:
-    raw = env.get(name, default) if default is not None else _required(env, name)
-    try:
-        value = int(raw)
-    except (TypeError, ValueError) as error:
-        raise _invalid(name, "must be an integer") from error
+    return _integer(
+        _required(mapping, name, field_name),
+        field_name,
+        minimum=minimum,
+        maximum=maximum,
+    )
+
+
+def _optional_integer(
+    mapping: Mapping[str, Any],
+    name: str,
+    field_name: str,
+    *,
+    default: int,
+    minimum: int = 1,
+    maximum: int | None = None,
+) -> int:
+    if name not in mapping:
+        return default
+    return _integer(mapping[name], field_name, minimum=minimum, maximum=maximum)
+
+
+def _integer(
+    value: Any,
+    field_name: str,
+    *,
+    minimum: int,
+    maximum: int | None,
+) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise _invalid(field_name, "must be an integer")
     if value < minimum or (maximum is not None and value > maximum):
         bounds = (
             f"between {minimum} and {maximum}"
             if maximum is not None
             else f"at least {minimum}"
         )
-        raise _invalid(name, f"must be {bounds}")
+        raise _invalid(field_name, f"must be {bounds}")
     return value
 
 
-def _number(env: Mapping[str, str], name: str) -> float:
-    raw = _required(env, name)
-    try:
-        value = float(raw)
-    except ValueError as error:
-        raise _invalid(name, "must be a number") from error
-    if value <= 0 or value == float("inf") or value != value:
-        raise _invalid(name, "must be a finite positive number")
-    return value
+def _required_number(
+    mapping: Mapping[str, Any], name: str, field_name: str
+) -> float:
+    value = _required(mapping, name, field_name)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _invalid(field_name, "must be a number")
+    converted = float(value)
+    if converted <= 0 or not math.isfinite(converted):
+        raise _invalid(field_name, "must be a finite positive number")
+    return converted
 
 
-def _origins(raw: str) -> tuple[str, ...]:
-    values = tuple(part.strip() for part in raw.split(","))
-    if not values or any(not value for value in values):
-        raise _invalid("RUNFOLD_ALLOWED_ORIGINS", "must contain exact comma-separated origins")
+def _bootstrap_admin(auth: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    value = auth.get("bootstrap_admin")
+    if value is None:
+        return None, None
+    admin = _mapping(value, "auth.bootstrap_admin")
+    _reject_unknown(admin, {"username", "password"}, "auth.bootstrap_admin")
+    return (
+        _required_string(admin, "username", "auth.bootstrap_admin.username"),
+        _required_string(admin, "password", "auth.bootstrap_admin.password"),
+    )
+
+
+def _origins(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list) or not value:
+        raise _invalid("cors.allowed_origins", "must be a non-empty YAML list")
+    if any(not isinstance(item, str) or not item.strip() for item in value):
+        raise _invalid("cors.allowed_origins", "must contain non-empty strings")
+    values = tuple(item.strip() for item in value)
     if "*" in values:
-        raise _invalid("RUNFOLD_ALLOWED_ORIGINS", "must not contain a wildcard")
+        raise _invalid("cors.allowed_origins", "must not contain a wildcard")
 
     normalized: list[str] = []
-    for value in values:
-        parts = urlsplit(value)
+    for origin in values:
+        parts = urlsplit(origin)
         if (
             parts.scheme not in {"http", "https"}
             or not parts.hostname
@@ -184,13 +351,12 @@ def _origins(raw: str) -> tuple[str, ...]:
             or parts.fragment
             or parts.path not in {"", "/"}
         ):
-            raise _invalid("RUNFOLD_ALLOWED_ORIGINS", "must contain only exact HTTP origins")
-        netloc = _canonical_netloc(parts, "RUNFOLD_ALLOWED_ORIGINS")
-        origin = urlunsplit((parts.scheme.lower(), netloc, "", "", ""))
-        normalized.append(origin)
+            raise _invalid("cors.allowed_origins", "must contain only exact HTTP origins")
+        netloc = _canonical_netloc(parts, "cors.allowed_origins")
+        normalized.append(urlunsplit((parts.scheme.lower(), netloc, "", "", "")))
 
     if len(set(normalized)) != len(normalized):
-        raise _invalid("RUNFOLD_ALLOWED_ORIGINS", "must not contain duplicate origins")
+        raise _invalid("cors.allowed_origins", "must not contain duplicate origins")
     return tuple(normalized)
 
 
@@ -204,14 +370,11 @@ def _base_url(raw: str) -> str:
         or parts.query
         or parts.fragment
     ):
-        raise _invalid(
-            "RUNFOLD_OPENAI_BASE_URL",
-            "must be an absolute HTTP URL without credentials",
-        )
+        raise _invalid("provider.base_url", "must be an absolute HTTP URL without credentials")
     path = parts.path.rstrip("/")
     if not path.endswith("/v1"):
-        raise _invalid("RUNFOLD_OPENAI_BASE_URL", "must end with /v1")
-    netloc = _canonical_netloc(parts, "RUNFOLD_OPENAI_BASE_URL")
+        raise _invalid("provider.base_url", "must end with /v1")
+    netloc = _canonical_netloc(parts, "provider.base_url")
     return urlunsplit((parts.scheme.lower(), netloc, path, "", ""))
 
 
@@ -231,6 +394,14 @@ def _canonical_netloc(parts, field_name: str) -> str:
         host = f"[{host}]"
     default_port = (parts.scheme.lower(), port) in {("http", 80), ("https", 443)}
     return f"{host}:{port}" if port is not None and not default_port else host
+
+
+def _reject_unknown(
+    mapping: Mapping[str, Any], allowed: set[str], field_name: str
+) -> None:
+    unknown = sorted(set(mapping) - allowed)
+    if unknown:
+        raise _invalid(field_name, f"contains unknown field: {unknown[0]}")
 
 
 def _invalid(name: str, reason: str) -> StartupError:

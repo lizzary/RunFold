@@ -7,18 +7,18 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+from conftest import ConfigFile
 from fastapi.testclient import TestClient
 
 from runfold_server.bootstrap import bootstrap
-from runfold_server.config import load_settings
 
 READER_ROLE_ID = "00000000-0000-4000-8000-000000000004"
 
 
 def test_usage_limits_are_aggregate_and_audit_is_system_admin_only(
-    admin_environment: dict[str, str],
+    admin_config: ConfigFile,
 ) -> None:
-    settings = load_settings(admin_environment)
+    settings = admin_config.load()
     client = TestClient(bootstrap(settings))
     admin = _login(client, "admin", "correct horse battery staple")
     user = client.post(
@@ -81,9 +81,9 @@ def test_usage_limits_are_aggregate_and_audit_is_system_admin_only(
 
 
 def test_limit_replacement_is_complete_and_rejects_unknown_fields(
-    admin_environment: dict[str, str],
+    admin_config: ConfigFile,
 ) -> None:
-    settings = load_settings(admin_environment)
+    settings = admin_config.load()
     client = TestClient(bootstrap(settings))
     admin = _login(client, "admin", "correct horse battery staple")
     admin_id = client.get("/api/auth/me", headers=admin).json()["id"]

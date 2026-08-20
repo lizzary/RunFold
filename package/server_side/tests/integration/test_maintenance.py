@@ -4,17 +4,17 @@ import sqlite3
 
 import lancedb
 import pytest
+from conftest import ConfigFile
 from fastapi.testclient import TestClient
 
 from runfold_server.__main__ import main
 from runfold_server.bootstrap import bootstrap
-from runfold_server.config import load_settings
 from runfold_server.knowledge.lance_index import LanceIndex
 from runfold_server.llm.openai_embeddings import EmbeddingBatch, OpenAIEmbeddingsClient
 
 
 def test_stopped_service_rebuild_changes_dimensions_bills_actor_and_compacts(
-    admin_environment: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    admin_config: ConfigFile, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def embed(
         self: OpenAIEmbeddingsClient, values: tuple[str, ...]
@@ -25,14 +25,15 @@ def test_stopped_service_rebuild_changes_dimensions_bills_actor_and_compacts(
         )
 
     monkeypatch.setattr(OpenAIEmbeddingsClient, "embed", embed)
-    settings = load_settings(admin_environment)
+    settings = admin_config.load()
     with TestClient(bootstrap(settings)) as client:
         headers = _login(client)
         document_id = _upload(client, headers)
 
-    changed_environment = dict(admin_environment)
-    changed_environment["RUNFOLD_EMBEDDING_DIMENSIONS"] = "4"
-    assert main(["rebuild-index", "--actor", "admin"], changed_environment) == 0
+    changed_config = admin_config.clone("changed-config.yaml")
+    changed_config.values["provider"]["embedding_dimensions"] = 4
+    changed_path = changed_config.write()
+    assert main(["rebuild-index", "--actor", "admin", "--config", str(changed_path)]) == 0
 
     table = lancedb.connect(settings.data_dir / "lance").open_table("chunks")
     assert table.schema.field("vector").type.list_size == 4
@@ -58,12 +59,15 @@ def test_stopped_service_rebuild_changes_dimensions_bills_actor_and_compacts(
     assert state == "ready"
     assert billed >= 10
     assert audit_count == 1
-    assert main(["compact-index"], changed_environment) == 0
-    assert main(["rebuild-index", "--actor", "missing"], changed_environment) == 2
+    assert main(["compact-index", "--config", str(changed_path)]) == 0
+    assert (
+        main(["rebuild-index", "--actor", "missing", "--config", str(changed_path)])
+        == 2
+    )
 
 
 def test_rebuild_interruption_after_settings_update_converges_without_embeddings(
-    admin_environment: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    admin_config: ConfigFile, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def embed(
         self: OpenAIEmbeddingsClient, values: tuple[str, ...]
@@ -74,19 +78,20 @@ def test_rebuild_interruption_after_settings_update_converges_without_embeddings
         )
 
     monkeypatch.setattr(OpenAIEmbeddingsClient, "embed", embed)
-    settings = load_settings(admin_environment)
+    settings = admin_config.load()
     with TestClient(bootstrap(settings)) as client:
         document_id = _upload(client, _login(client))
 
-    changed_environment = dict(admin_environment)
-    changed_environment["RUNFOLD_EMBEDDING_DIMENSIONS"] = "4"
+    changed_config = admin_config.clone("changed-config.yaml")
+    changed_config.values["provider"]["embedding_dimensions"] = 4
+    changed_path = changed_config.write()
     original_recreate = LanceIndex.recreate
 
     def interrupt(self: LanceIndex) -> None:
         raise RuntimeError("injected interruption")
 
     monkeypatch.setattr(LanceIndex, "recreate", interrupt)
-    assert main(["rebuild-index", "--actor", "admin"], changed_environment) == 1
+    assert main(["rebuild-index", "--actor", "admin", "--config", str(changed_path)]) == 1
     database = settings.data_dir / "runfold.sqlite3"
     with sqlite3.connect(database) as connection:
         assert connection.execute(
@@ -104,7 +109,7 @@ def test_rebuild_interruption_after_settings_update_converges_without_embeddings
         raise AssertionError("startup recovery must not call embeddings")
 
     monkeypatch.setattr(OpenAIEmbeddingsClient, "embed", forbidden_embed)
-    bootstrap(load_settings(changed_environment))
+    bootstrap(changed_config.load())
 
     with sqlite3.connect(database) as connection:
         assert connection.execute(

@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
+from conftest import ConfigFile
 
 from runfold_server.config import load_settings
 from runfold_server.errors import StartupError
 
 
-def test_load_settings_normalizes_values(valid_environment: dict[str, str]) -> None:
-    settings = load_settings(valid_environment)
+def test_load_settings_normalizes_values(valid_config: ConfigFile) -> None:
+    settings = valid_config.load()
 
     assert settings.host == "127.0.0.1"
     assert settings.port == 8765
-    assert settings.data_dir == Path(valid_environment["RUNFOLD_DATA_DIR"])
+    assert settings.data_dir == valid_config.data_dir
     assert settings.allowed_origins == (
         "http://localhost:3000",
         "https://app.example.com",
@@ -23,64 +25,101 @@ def test_load_settings_normalizes_values(valid_environment: dict[str, str]) -> N
     assert settings.llm_timeout_seconds == 10.5
 
 
-def test_missing_required_value_is_rejected(valid_environment: dict[str, str]) -> None:
-    del valid_environment["RUNFOLD_EMBEDDING_MODEL"]
+def test_server_values_have_defaults(valid_config: ConfigFile) -> None:
+    del valid_config.values["server"]
 
-    with pytest.raises(StartupError, match="RUNFOLD_EMBEDDING_MODEL is required"):
-        load_settings(valid_environment)
+    settings = valid_config.load()
+
+    assert settings.host == "127.0.0.1"
+    assert settings.port == 8000
+
+
+def test_missing_required_value_is_rejected(valid_config: ConfigFile) -> None:
+    del valid_config.values["provider"]["embedding_model"]
+
+    with pytest.raises(StartupError, match=r"provider\.embedding_model is required"):
+        valid_config.load()
 
 
 @pytest.mark.parametrize(
-    ("name", "value"),
+    ("path", "value"),
     [
-        ("RUNFOLD_ALLOWED_ORIGINS", "*"),
-        ("RUNFOLD_ALLOWED_ORIGINS", "https://app.example.com/path"),
-        ("RUNFOLD_OPENAI_BASE_URL", "https://api.example.com"),
-        ("RUNFOLD_OPENAI_BASE_URL", "file:///v1"),
-        ("RUNFOLD_EMBEDDING_DIMENSIONS", "0"),
-        ("RUNFOLD_LLM_TIMEOUT_SECONDS", "nan"),
-        ("RUNFOLD_LLM_MAX_RETRIES", "-1"),
+        (("cors", "allowed_origins"), ["*"]),
+        (("cors", "allowed_origins"), ["https://app.example.com/path"]),
+        (("provider", "base_url"), "https://api.example.com"),
+        (("provider", "base_url"), "file:///v1"),
+        (("provider", "embedding_dimensions"), 0),
+        (("provider", "timeout_seconds"), float("nan")),
+        (("provider", "max_retries"), -1),
     ],
 )
 def test_invalid_configuration_is_rejected(
-    valid_environment: dict[str, str], name: str, value: str
+    valid_config: ConfigFile, path: tuple[str, str], value: Any
 ) -> None:
-    valid_environment[name] = value
+    valid_config.values[path[0]][path[1]] = value
 
     with pytest.raises(StartupError) as captured:
-        load_settings(valid_environment)
+        valid_config.load()
 
     assert captured.value.code == "invalid_configuration"
 
 
-def test_overlap_must_be_smaller_than_chunk_size(valid_environment: dict[str, str]) -> None:
-    valid_environment["RUNFOLD_CHUNK_OVERLAP"] = valid_environment["RUNFOLD_CHUNK_SIZE"]
+def test_unknown_fields_are_rejected(valid_config: ConfigFile) -> None:
+    valid_config.values["provider"]["legacy_provider"] = "forbidden"
+
+    with pytest.raises(StartupError, match="unknown field"):
+        valid_config.load()
+
+
+def test_overlap_must_be_smaller_than_chunk_size(valid_config: ConfigFile) -> None:
+    valid_config.values["rag"]["chunk_overlap"] = valid_config.values["rag"][
+        "chunk_size"
+    ]
 
     with pytest.raises(StartupError, match="must be smaller"):
-        load_settings(valid_environment)
+        valid_config.load()
 
 
-def test_data_directory_must_be_absolute(valid_environment: dict[str, str]) -> None:
-    valid_environment["RUNFOLD_DATA_DIR"] = "relative/data"
+def test_data_directory_must_be_absolute(valid_config: ConfigFile) -> None:
+    valid_config.values["data"]["directory"] = "relative/data"
 
     with pytest.raises(StartupError, match="absolute path"):
-        load_settings(valid_environment)
+        valid_config.load()
 
 
-def test_bootstrap_admin_values_are_an_optional_pair(valid_environment: dict[str, str]) -> None:
-    valid_environment["RUNFOLD_BOOTSTRAP_ADMIN_USERNAME"] = "admin"
+def test_bootstrap_admin_requires_complete_mapping(valid_config: ConfigFile) -> None:
+    valid_config.values["auth"]["bootstrap_admin"] = {"username": "admin"}
 
-    with pytest.raises(StartupError, match="must be provided together"):
-        load_settings(valid_environment)
+    with pytest.raises(
+        StartupError, match=r"auth\.bootstrap_admin\.password is required"
+    ):
+        valid_config.load()
 
 
-def test_secret_values_are_absent_from_settings_repr(valid_environment: dict[str, str]) -> None:
-    valid_environment["RUNFOLD_OPENAI_API_KEY"] = "api-key-secret"
-    valid_environment["RUNFOLD_BOOTSTRAP_ADMIN_USERNAME"] = "admin"
-    valid_environment["RUNFOLD_BOOTSTRAP_ADMIN_PASSWORD"] = "password-secret"
+def test_secret_values_are_absent_from_settings_repr(valid_config: ConfigFile) -> None:
+    valid_config.values["provider"]["api_key"] = "api-key-secret"
+    valid_config.values["auth"]["bootstrap_admin"] = {
+        "username": "admin",
+        "password": "password-secret",
+    }
 
-    representation = repr(load_settings(valid_environment))
+    representation = repr(valid_config.load())
 
     assert "api-key-secret" not in representation
     assert "password-secret" not in representation
 
+
+@pytest.mark.parametrize("content", ["- not-a-mapping\n", "provider: [\n"])
+def test_invalid_yaml_document_is_rejected(tmp_path: Path, content: str) -> None:
+    path = tmp_path / "invalid.yaml"
+    path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(StartupError) as captured:
+        load_settings(path)
+
+    assert captured.value.code == "invalid_configuration"
+
+
+def test_missing_configuration_file_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(StartupError, match="does not exist"):
+        load_settings(tmp_path / "missing.yaml")

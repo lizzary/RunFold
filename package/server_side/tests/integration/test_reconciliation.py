@@ -9,17 +9,17 @@ from pathlib import Path
 import lancedb
 import pyarrow as pa
 import pytest
+from conftest import ConfigFile
 
 from runfold_server.bootstrap import bootstrap
-from runfold_server.config import load_settings
 from runfold_server.errors import StartupError
 from runfold_server.llm.openai_embeddings import OpenAIEmbeddingsClient
 
 
 def test_restart_converges_interrupted_indexing_and_deleting_without_embeddings(
-    admin_environment: dict[str, str],
+    admin_config: ConfigFile,
 ) -> None:
-    settings = load_settings(admin_environment)
+    settings = admin_config.load()
     bootstrap(settings)
     database = settings.data_dir / "runfold.sqlite3"
     with sqlite3.connect(database) as connection:
@@ -61,13 +61,13 @@ def test_restart_converges_interrupted_indexing_and_deleting_without_embeddings(
 
 
 def test_index_configuration_change_rebuilds_only_when_no_ready_documents(
-    admin_environment: dict[str, str],
+    admin_config: ConfigFile,
 ) -> None:
-    settings = load_settings(admin_environment)
+    settings = admin_config.load()
     bootstrap(settings)
-    changed_environment = dict(admin_environment)
-    changed_environment["RUNFOLD_EMBEDDING_DIMENSIONS"] = "4"
-    changed = load_settings(changed_environment)
+    changed_config = admin_config.clone("changed-config.yaml")
+    changed_config.values["provider"]["embedding_dimensions"] = 4
+    changed = changed_config.load()
 
     bootstrap(changed)
     vector_type = lancedb.connect(changed.data_dir / "lance").open_table("chunks").schema.field(
@@ -86,17 +86,16 @@ def test_index_configuration_change_rebuilds_only_when_no_ready_documents(
     (directory / "source").write_bytes(b"ready")
     (directory / "extracted.txt").write_text("ready", encoding="utf-8")
 
-    original_environment = dict(admin_environment)
-    original = load_settings(original_environment)
+    original = admin_config.load()
     with pytest.raises(StartupError) as error:
         bootstrap(original)
     assert error.value.code == "incompatible_rag_index"
 
 
 def test_restart_checks_ready_integrity_and_removes_orphan_vectors_without_embeddings(
-    admin_environment: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    admin_config: ConfigFile, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    settings = load_settings(admin_environment)
+    settings = admin_config.load()
     bootstrap(settings)
     database = settings.data_dir / "runfold.sqlite3"
     with sqlite3.connect(database) as connection:

@@ -3,17 +3,17 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
+from conftest import ConfigFile
 from fastapi.testclient import TestClient
 
 from runfold_server.bootstrap import bootstrap
-from runfold_server.config import load_settings
 from runfold_server.knowledge.lance_index import LanceIndex
 from runfold_server.knowledge.object_store import ObjectStore
 from runfold_server.llm.openai_embeddings import EmbeddingBatch, OpenAIEmbeddingsClient
 
 
 def test_replace_reindex_and_delete_faults_restart_to_safe_terminal_states(
-    admin_environment: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    admin_config: ConfigFile, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def embed(
         self: OpenAIEmbeddingsClient, values: tuple[str, ...]
@@ -24,7 +24,7 @@ def test_replace_reindex_and_delete_faults_restart_to_safe_terminal_states(
         )
 
     monkeypatch.setattr(OpenAIEmbeddingsClient, "embed", embed)
-    settings = load_settings(admin_environment)
+    settings = admin_config.load()
     original_replace = LanceIndex.replace_document
     original_delete_object = ObjectStore.delete_document
     with TestClient(bootstrap(settings)) as client:

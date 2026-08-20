@@ -1,0 +1,39 @@
+server:
+  host: 127.0.0.1
+  port: 8000
+
+data:
+  directory: D:/RunFoldData
+
+cors:
+  allowed_origins:
+    - http://localhost:3000
+    - http://127.0.0.1:3000
+
+provider:
+  base_url: https://api.openai.com/v1
+  api_key: replace-with-provider-api-key
+  embedding_model: text-embedding-3-small
+  embedding_dimensions: 1536
+  embed_batch_size: 16
+  timeout_seconds: 30
+  max_retries: 2
+
+rag:
+  chunk_size: 1000
+  chunk_overlap: 100
+  upload_max_bytes: 20971520
+  extract_max_characters: 2000000
+  pdf_max_pages: 500
+  docx_max_uncompressed_bytes: 104857600
+
+auth:
+  session_ttl_seconds: 86400
+  bootstrap_admin:
+    username: admin
+    password: replace-with-at-least-12-characters
+
+limits:
+  default_max_documents: 1000
+  default_max_storage_bytes: 10737418240
+  default_monthly_embedding_tokens: 100000000
