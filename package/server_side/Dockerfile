@@ -14,7 +14,7 @@ RUN groupadd --gid 10001 runfold \
     && useradd --uid 10001 --gid runfold --no-create-home --shell /usr/sbin/nologin runfold \
     && install -d -o runfold -g runfold /var/lib/runfold
 
-COPY requirements-dev.txt ./
+COPY requirements.txt requirements-dev.txt ./
 RUN python -m pip install --no-cache-dir --requirement requirements-dev.txt
 
 COPY --chown=runfold:runfold runfold_server ./runfold_server
