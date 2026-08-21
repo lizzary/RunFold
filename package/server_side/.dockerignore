@@ -1,0 +1,6 @@
+**
+!Dockerfile
+!requirements.txt
+!requirements-dev.txt
+!runfold_server/
+!runfold_server/**

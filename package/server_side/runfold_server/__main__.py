@@ -58,7 +58,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         application = bootstrap(settings)
     except StartupError as error:
-        _LOGGER.error("startup_rejected", extra={"error_code": error.code})
+        _LOGGER.error(
+            "startup_rejected",
+            extra={"error_code": error.code, "reason": error.safe_message},
+        )
         return 2
     except Exception:
         _LOGGER.exception("startup_failed")
