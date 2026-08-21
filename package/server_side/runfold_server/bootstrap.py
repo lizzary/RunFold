@@ -12,6 +12,7 @@ from runfold_server.access_control.repository import AccessControlRepository
 from runfold_server.access_control.service import AccessControlService
 from runfold_server.config import Settings
 from runfold_server.http.app import create_app
+from runfold_server.http.routers.temporary_responses import TemporaryResponsesClient
 from runfold_server.identity.passwords import Argon2PasswordHasher
 from runfold_server.identity.repository import IdentityRepository
 from runfold_server.identity.service import IdentityService
@@ -140,6 +141,12 @@ def bootstrap(settings: Settings) -> FastAPI:
             repository=audit_repository,
             identity=identity_service,
             authorization=authorization_service,
+        ),
+        temporary_responses_client=TemporaryResponsesClient(
+            http_client=http_client,
+            base_url=current_settings.openai_base_url,
+            api_key=current_settings.openai_api_key,
+            max_retries=current_settings.llm_max_retries,
         ),
         shutdown=http_client.aclose,
     )

@@ -451,6 +451,7 @@ def test_bootstrapped_openapi_matches_final_http_contract(
         "/api/rag/documents/{document_id}/reindex": {"post"},
         "/api/rag/documents/{document_id}/acl": {"get", "put"},
         "/api/rag/search": {"post"},
+        "/api/temporary/responses": {"post"},
         "/api/usage/me": {"get"},
         "/api/usage/users/{user_id}": {"get"},
         "/api/usage/users/{user_id}/limits": {"put"},

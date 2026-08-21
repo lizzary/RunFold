@@ -23,6 +23,10 @@ from runfold_server.http.routers.auth import create_auth_router
 from runfold_server.http.routers.documents import create_documents_router
 from runfold_server.http.routers.health import create_health_router
 from runfold_server.http.routers.search import create_search_router
+from runfold_server.http.routers.temporary_responses import (
+    TemporaryResponsesClient,
+    create_temporary_responses_router,
+)
 from runfold_server.http.routers.usage import create_usage_router
 from runfold_server.identity.service import IdentityService
 from runfold_server.knowledge.service import KnowledgeService
@@ -41,6 +45,7 @@ def create_app(
     knowledge_service: KnowledgeService | None = None,
     usage_service: UsageService | None = None,
     audit_service: AuditService | None = None,
+    temporary_responses_client: TemporaryResponsesClient | None = None,
     shutdown: Callable[[], Awaitable[None]] | None = None,
 ) -> FastAPI:
     @asynccontextmanager
@@ -153,6 +158,13 @@ def create_app(
         raise ValueError("Identity and access-control services must be installed together")
     if identity_service is not None and access_control_service is not None:
         app.include_router(create_auth_router(identity_service))
+        if temporary_responses_client is not None:
+            app.include_router(
+                create_temporary_responses_router(
+                    identity_service,
+                    temporary_responses_client,
+                )
+            )
         app.include_router(
             create_access_control_router(identity_service, access_control_service)
         )
