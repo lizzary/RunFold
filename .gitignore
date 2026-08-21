@@ -6,6 +6,8 @@
 **/.pytest-tmp/
 **/artifacts/
 **/lance/
+**/objects/
+**/staging/
 /package/server_side/config.yaml
 *.sqlite3
 *.sqlite3-shm

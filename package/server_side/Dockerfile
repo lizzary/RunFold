@@ -18,8 +18,9 @@ COPY requirements.txt requirements-dev.txt ./
 RUN python -m pip install --no-cache-dir --requirement requirements-dev.txt
 
 COPY --chown=runfold:runfold runfold_server ./runfold_server
+COPY --chown=runfold:runfold config.yaml /etc/runfold/config.yaml
 
-USER 10001:10001
+USER 0:0
 
 EXPOSE 8383
 

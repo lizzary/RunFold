@@ -2,5 +2,6 @@
 !Dockerfile
 !requirements.txt
 !requirements-dev.txt
+!config.yaml
 !runfold_server/
 !runfold_server/**

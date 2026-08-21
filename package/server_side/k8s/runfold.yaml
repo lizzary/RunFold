@@ -28,24 +28,24 @@ spec:
         app.kubernetes.io/name: runfold-server
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 10001
-        runAsGroup: 10001
-        fsGroup: 10001
+        runAsNonRoot: false
+        runAsUser: 0
+        runAsGroup: 0
+        fsGroup: 0
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: server
-          image: registry.example.com/runfold/runfold-server:0.1.0
-          imagePullPolicy: IfNotPresent
+          image: runfold-server:root
+          imagePullPolicy: Never
           ports:
             - name: http
               containerPort: 8383
               protocol: TCP
           securityContext:
             allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
+            readOnlyRootFilesystem: false
             capabilities:
               drop:
                 - ALL
