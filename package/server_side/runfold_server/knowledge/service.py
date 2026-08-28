@@ -192,8 +192,7 @@ class KnowledgeService:
     ) -> tuple[tuple[Document, ...], int]:
         now = _now()
         with connect(self._database_path) as connection:
-            connection.execute("BEGIN")
-            current, access = self._current_access(
+            current, access = self._begin_audited_access(
                 connection, actor, frozenset({RAG_DOCUMENT_READ})
             )
             self._access_policy.record_bypass(
@@ -711,8 +710,7 @@ class KnowledgeService:
     ) -> tuple[AclGrant, ...]:
         now = _now()
         with connect(self._database_path) as connection:
-            connection.execute("BEGIN")
-            current, access = self._current_access(
+            current, access = self._begin_audited_access(
                 connection, actor, frozenset({RAG_DOCUMENT_ACL_MANAGE})
             )
             self._access_policy.require_document(
@@ -988,8 +986,7 @@ class KnowledgeService:
     ) -> Document:
         now = _now()
         with connect(self._database_path) as connection:
-            connection.execute("BEGIN")
-            current, access = self._current_access(
+            current, access = self._begin_audited_access(
                 connection, actor, frozenset({capability})
             )
             return self._access_policy.require_document(
@@ -1007,8 +1004,7 @@ class KnowledgeService:
     ) -> Document:
         now = _now()
         with connect(self._database_path) as connection:
-            connection.execute("BEGIN")
-            current, access = self._current_access(
+            current, access = self._begin_audited_access(
                 connection, actor, frozenset({RAG_DOCUMENT_READ})
             )
             return self._access_policy.require_document(
@@ -1064,8 +1060,9 @@ class KnowledgeService:
     ) -> Document:
         now = _now()
         with connect(self._database_path) as connection:
-            connection.execute("BEGIN")
-            current, access = self._current_access(connection, actor, capabilities)
+            current, access = self._begin_audited_access(
+                connection, actor, capabilities
+            )
             return self._access_policy.require_document(
                 connection,
                 context=current.context,
@@ -1078,8 +1075,7 @@ class KnowledgeService:
 
     def _return_upload(self, actor: VerifiedIdentity, document_id: str) -> Document:
         with connect(self._database_path) as connection:
-            connection.execute("BEGIN")
-            current, access = self._current_access(
+            current, access = self._begin_audited_access(
                 connection, actor, frozenset({RAG_DOCUMENT_UPLOAD})
             )
             return self._access_policy.require_document(
@@ -1113,6 +1109,24 @@ class KnowledgeService:
             current.user_id, required, connection=connection
         )
         return current, access
+
+    def _begin_audited_access(
+        self,
+        connection: sqlite3.Connection,
+        actor: VerifiedIdentity,
+        required: frozenset[str],
+    ) -> tuple[VerifiedIdentity, CurrentAccess]:
+        connection.execute("BEGIN")
+        current, access = self._current_access(connection, actor, required)
+        if not access.bypass:
+            return current, access
+
+        # A bypass authorization writes its mandatory audit event in this transaction.
+        # End the read snapshot before reserving the SQLite writer slot so concurrent
+        # Agent tools cannot deadlock while both try to upgrade a read transaction.
+        connection.rollback()
+        connection.execute("BEGIN IMMEDIATE")
+        return self._current_access(connection, actor, required)
 
     def _require_create_capacity(
         self,

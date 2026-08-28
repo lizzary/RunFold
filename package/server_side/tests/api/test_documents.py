@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import concurrent.futures
+import contextlib
 import sqlite3
+import threading
 from pathlib import Path
 
 import lancedb
@@ -8,6 +11,7 @@ import pytest
 from conftest import ConfigFile
 from fastapi.testclient import TestClient
 
+from runfold_server.access_control.audit import AuditRepository
 from runfold_server.bootstrap import bootstrap
 from runfold_server.knowledge.lance_index import LanceIndex
 from runfold_server.llm.openai_embeddings import EmbeddingBatch, OpenAIEmbeddingsClient
@@ -232,6 +236,49 @@ def test_index_failure_converges_to_failed_and_never_exposes_derived_text(
         f"/api/rag/documents/{document_id}/text", headers=headers
     ).status_code == 404
     assert not (data_dir / "objects" / document_id / "extracted.txt").exists()
+
+
+def test_parallel_admin_text_reads_serialize_bypass_audit_writes(
+    document_client: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _ = document_client
+    headers = _login(client, "admin", "correct horse battery staple")
+    uploaded = client.post(
+        "/api/rag/documents",
+        headers=headers,
+        data={"title": "Concurrent bypass reads"},
+        files={"file": ("parallel.txt", b"parallel read evidence")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    document_id = uploaded.json()["id"]
+
+    original_record = AuditRepository.record
+    audit_barrier = threading.Barrier(2)
+    thread_state = threading.local()
+
+    def synchronized_record(
+        self: AuditRepository, connection: sqlite3.Connection, **values: object
+    ) -> None:
+        if values.get("action") == "rag.document.bypass" and not getattr(
+            thread_state, "waited", False
+        ):
+            thread_state.waited = True
+            with contextlib.suppress(threading.BrokenBarrierError):
+                audit_barrier.wait(timeout=0.5)
+        original_record(self, connection, **values)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(AuditRepository, "record", synchronized_record)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        responses = tuple(
+            executor.map(
+                lambda _: client.get(
+                    f"/api/rag/documents/{document_id}/text", headers=headers
+                ),
+                range(2),
+            )
+        )
+
+    assert [response.status_code for response in responses] == [200, 200]
 
 
 def _login(client: TestClient, username: str, password: str) -> dict[str, str]:
