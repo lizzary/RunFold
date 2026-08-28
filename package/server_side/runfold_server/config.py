@@ -11,6 +11,16 @@ import yaml
 
 from runfold_server.errors import StartupError
 
+_DEFAULT_THINKING_LEVEL_OPTIONS = (
+    "on",
+    "off",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class AgentBudget:
@@ -19,6 +29,7 @@ class AgentBudget:
     input_tokens: int
     output_tokens: int
     thinking_tokens: int
+    compression_threshold: float
 
     @property
     def visible_output_tokens(self) -> int:
@@ -48,6 +59,18 @@ class AgentBudget:
     def max_steps(self) -> int:
         return self.context_window_tokens // self.visible_output_tokens
 
+    @property
+    def compression_trigger_tokens(self) -> int:
+        return max(1, int(self.input_tokens * self.compression_threshold))
+
+    @property
+    def compression_keep_tokens(self) -> int:
+        return self.input_tokens - self.compression_trigger_tokens
+
+    @property
+    def oversized_tool_result_tokens(self) -> int:
+        return self.compression_trigger_tokens
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -64,6 +87,8 @@ class Settings:
     llm_max_retries: int
     agent_model: str
     agent_budget: AgentBudget
+    agent_thinking_level_options: tuple[str, ...]
+    agent_default_thinking_level: str | None
     chunk_size: int
     chunk_overlap: int
     upload_max_bytes: int
@@ -130,6 +155,9 @@ def load_settings(path: str | Path) -> Settings:
             "input_tokens",
             "output_tokens",
             "thinking_tokens",
+            "compression_threshold",
+            "thinking_level_options",
+            "default_thinking_level",
         },
         "agent",
     )
@@ -218,6 +246,17 @@ def load_settings(path: str | Path) -> Settings:
         "agent.thinking_tokens",
         minimum=0,
     )
+    agent_compression_threshold = _optional_ratio(
+        agent,
+        "compression_threshold",
+        "agent.compression_threshold",
+        default=0.8,
+    )
+    agent_thinking_level_options = _thinking_level_options(agent)
+    agent_default_thinking_level = _default_thinking_level(
+        agent,
+        agent_thinking_level_options,
+    )
     if agent_thinking_tokens >= agent_output_tokens:
         raise _invalid(
             "agent.thinking_tokens",
@@ -234,6 +273,7 @@ def load_settings(path: str | Path) -> Settings:
         input_tokens=agent_input_tokens,
         output_tokens=agent_output_tokens,
         thinking_tokens=agent_thinking_tokens,
+        compression_threshold=agent_compression_threshold,
     )
 
     chunk_size = _required_integer(rag, "chunk_size", "rag.chunk_size")
@@ -293,6 +333,8 @@ def load_settings(path: str | Path) -> Settings:
         llm_max_retries=llm_max_retries,
         agent_model=agent_model,
         agent_budget=agent_budget,
+        agent_thinking_level_options=agent_thinking_level_options,
+        agent_default_thinking_level=agent_default_thinking_level,
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         upload_max_bytes=upload_max_bytes,
@@ -431,6 +473,65 @@ def _required_number(
     if converted <= 0 or not math.isfinite(converted):
         raise _invalid(field_name, "must be a finite positive number")
     return converted
+
+
+def _optional_ratio(
+    mapping: Mapping[str, Any],
+    name: str,
+    field_name: str,
+    *,
+    default: float,
+) -> float:
+    if name not in mapping:
+        return default
+    value = mapping[name]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _invalid(field_name, "must be a number")
+    converted = float(value)
+    if not math.isfinite(converted) or converted <= 0 or converted >= 1:
+        raise _invalid(field_name, "must be greater than 0 and smaller than 1")
+    return converted
+
+
+def _thinking_level_options(agent: Mapping[str, Any]) -> tuple[str, ...]:
+    if "thinking_level_options" not in agent:
+        return _DEFAULT_THINKING_LEVEL_OPTIONS
+    value = agent["thinking_level_options"]
+    if not isinstance(value, list):
+        raise _invalid("agent.thinking_level_options", "must be a YAML list")
+    normalized: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise _invalid(
+                "agent.thinking_level_options",
+                "must contain non-empty strings",
+            )
+        level = item.strip().lower()
+        if level in normalized:
+            raise _invalid(
+                "agent.thinking_level_options",
+                "must not contain duplicate values",
+            )
+        normalized.append(level)
+    return tuple(normalized)
+
+
+def _default_thinking_level(
+    agent: Mapping[str, Any],
+    options: tuple[str, ...],
+) -> str | None:
+    value = _required(agent, "default_thinking_level", "agent.default_thinking_level")
+    if not isinstance(value, str):
+        raise _invalid("agent.default_thinking_level", "must be a string")
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    if normalized not in options:
+        raise _invalid(
+            "agent.default_thinking_level",
+            "must be empty or present in agent.thinking_level_options",
+        )
+    return normalized
 
 
 def _bootstrap_admin(auth: Mapping[str, Any]) -> tuple[str | None, str | None]:

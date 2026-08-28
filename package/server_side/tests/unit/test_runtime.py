@@ -12,6 +12,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from runfold_server.config import AgentBudget
 from runfold_server.errors import ApiError
 from runfold_server.identity.models import AuthContext, User, VerifiedIdentity
+from runfold_server.runtime.files import FileWorkspaceService
 from runfold_server.runtime.service import AgentRuntimeService
 from runfold_server.runtime.skill_registry import SkillRegistry
 
@@ -78,13 +79,22 @@ class _QuotaUsage(_Usage):
 
 class _TeamModel(BaseChatModel):
     seen_prompts: ClassVar[list[str]] = []
+    seen_tool_sets: ClassVar[list[set[str]]] = []
+    seen_reasoning_efforts: ClassVar[list[str | None]] = []
 
     @property
     def _llm_type(self) -> str:
         return "runfold-scripted-team"
 
-    def bind_tools(self, tools: object, **kwargs: object) -> _TeamModel:
-        del tools, kwargs
+    def bind_tools(self, tools: list[Any], **kwargs: object) -> _TeamModel:
+        self.seen_reasoning_efforts.append(getattr(self, "reasoning_effort", None))
+        self.seen_tool_sets.append(
+            {
+                str(tool.name if hasattr(tool, "name") else tool.get("name", ""))
+                for tool in tools
+            }
+        )
+        del kwargs
         return self
 
     def _generate(
@@ -144,7 +154,12 @@ class _TeamModel(BaseChatModel):
                     ],
                 )
             else:
-                answer = AIMessage(content="Root evaluated the reports and approved the result.")
+                answer = AIMessage(
+                    content="Root evaluated the reports and approved the result.",
+                    additional_kwargs={
+                        "reasoning_content": "Root compared every available employee report."
+                    },
+                )
         elif "You are /root/lead," in system:
             if "delegate_tasks" not in tool_names:
                 answer = AIMessage(
@@ -185,6 +200,7 @@ class _TeamModel(BaseChatModel):
 class _ConcurrencyModel(BaseChatModel):
     active: ClassVar[int] = 0
     peak: ClassVar[int] = 0
+    seen_reasoning_efforts: ClassVar[list[str | None]] = []
 
     @property
     def _llm_type(self) -> str:
@@ -192,6 +208,7 @@ class _ConcurrencyModel(BaseChatModel):
 
     def bind_tools(self, tools: object, **kwargs: object) -> _ConcurrencyModel:
         del tools, kwargs
+        self.seen_reasoning_efforts.append(getattr(self, "reasoning_effort", None))
         return self
 
     def _generate(
@@ -251,6 +268,8 @@ def test_dynamic_tree_parallel_delegation_follow_up_and_skill_injection(
 ) -> None:
     model = _TeamModel()
     model.seen_prompts.clear()
+    model.seen_tool_sets.clear()
+    model.seen_reasoning_efforts.clear()
     audit = _Audit()
     usage = _Usage()
     service = AgentRuntimeService(
@@ -264,17 +283,39 @@ def test_dynamic_tree_parallel_delegation_follow_up_and_skill_injection(
         skills=SkillRegistry(_SKILL_ROOT),
         budget=_budget(),
         provider_slots=asyncio.Semaphore(_budget().provider_concurrency),
+        file_workspaces=_file_workspaces(tmp_path / "agent-work"),
+        thinking_level_options=("on", "off", "low", "high"),
+        default_thinking_level=None,
     )
 
     result = asyncio.run(service.run(_actor("request-1"), "Make the product decision."))
 
     assert result.answer == "Root evaluated the reports and approved the result."
+    assert result.reasoning_content == "Root compared every available employee report."
+    assert result.thinking_level is None
     assert result.agents_created == 3
     assert result.max_depth_reached == 2
     assert usage.tokens == 16
     assert any('<trusted_skill name="rag-research">' in item for item in model.seen_prompts)
     assert any('<trusted_skill name="critical-review">' in item for item in model.seen_prompts)
     assert any('<trusted_skill name="product-decision">' in item for item in model.seen_prompts)
+    assert model.seen_tool_sets
+    assert all(
+        {
+            "write_file",
+            "read_file",
+            "read_files",
+            "list_directory",
+            "find_files",
+            "search_files",
+            "file_info",
+            "count_text",
+            "read_file_chunk",
+            "append_file",
+            "apply_patch",
+        }.issubset(tool_set)
+        for tool_set in model.seen_tool_sets
+    )
     assert audit.events[-1]["action"] == "agent.run"
     assert audit.events[-1]["details"] == {
         "outcome": "completed",
@@ -314,6 +355,9 @@ def test_agent_quota_is_checked_before_the_model_is_called(tmp_path: Path) -> No
         skills=SkillRegistry(_SKILL_ROOT),
         budget=_budget(),
         provider_slots=asyncio.Semaphore(_budget().provider_concurrency),
+        file_workspaces=_file_workspaces(tmp_path / "agent-work"),
+        thinking_level_options=("on", "off", "low", "high"),
+        default_thinking_level=None,
     )
 
     with pytest.raises(ApiError) as captured:
@@ -363,7 +407,7 @@ def test_provider_concurrency_is_enforced_across_root_runs(tmp_path: Path) -> No
     ("usage", "status_code", "code"),
     [
         (
-            {"input_tokens": 1001, "output_tokens": 1, "total_tokens": 1002},
+            {"input_tokens": 5001, "output_tokens": 1, "total_tokens": 5002},
             413,
             "agent_input_token_limit",
         ),
@@ -400,6 +444,40 @@ def test_provider_usage_is_checked_against_each_configured_budget(
     assert captured.value.code == code
 
 
+def test_thinking_level_uses_config_default_and_allows_request_override(
+    tmp_path: Path,
+) -> None:
+    model = _ConcurrencyModel()
+    model.seen_reasoning_efforts.clear()
+    service = _runtime_service(
+        tmp_path / "thinking.sqlite3",
+        model,
+        _budget(),
+        default_thinking_level="high",
+    )
+
+    configured_default = asyncio.run(
+        service.run(_actor("thinking-default"), "default")
+    )
+    provider_default = asyncio.run(
+        service.run(_actor("thinking-provider"), "provider", thinking_level="")
+    )
+
+    assert configured_default.thinking_level == "high"
+    assert provider_default.thinking_level is None
+    assert model.seen_reasoning_efforts == ["high", None]
+
+    with pytest.raises(ApiError) as invalid:
+        asyncio.run(
+            service.run(
+                _actor("thinking-invalid"),
+                "invalid",
+                thinking_level="medium",
+            )
+        )
+    assert invalid.value.code == "invalid_thinking_level"
+
+
 def _actor(request_id: str) -> VerifiedIdentity:
     return VerifiedIdentity(
         context=AuthContext(
@@ -422,6 +500,8 @@ def _runtime_service(
     database_path: Path,
     model: BaseChatModel,
     budget: AgentBudget,
+    *,
+    default_thinking_level: str | None = None,
 ) -> AgentRuntimeService:
     return AgentRuntimeService(
         database_path=database_path,
@@ -434,6 +514,9 @@ def _runtime_service(
         skills=SkillRegistry(_SKILL_ROOT),
         budget=budget,
         provider_slots=asyncio.Semaphore(budget.provider_concurrency),
+        file_workspaces=_file_workspaces(database_path.parent / "agent-work"),
+        thinking_level_options=("on", "off", "low", "high"),
+        default_thinking_level=default_thinking_level,
     )
 
 
@@ -454,11 +537,17 @@ def _final_probe_result() -> ChatResult:
     )
 
 
+def _file_workspaces(path: Path) -> FileWorkspaceService:
+    path.mkdir(parents=True, exist_ok=True)
+    return FileWorkspaceService(path)
+
+
 def _budget(*, provider_concurrency: int = 2) -> AgentBudget:
     return AgentBudget(
-        context_window_tokens=6000,
+        context_window_tokens=22000,
         provider_concurrency=provider_concurrency,
-        input_tokens=1000,
+        input_tokens=5000,
         output_tokens=500,
         thinking_tokens=300,
+        compression_threshold=0.8,
     )

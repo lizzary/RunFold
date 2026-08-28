@@ -20,6 +20,7 @@ class DataPaths:
     objects: Path
     lance: Path
     staging: Path
+    agent_work: Path
 
 
 def initialize_data_paths(data_dir: Path) -> DataPaths:
@@ -36,6 +37,7 @@ def initialize_data_paths(data_dir: Path) -> DataPaths:
         "objects": root / "objects",
         "lance": root / "lance",
         "staging": root / "staging",
+        "agent_work": root / "agent_work",
     }
     resolved = {name: path.resolve(strict=False) for name, path in candidates.items()}
     if any(path == root or not path.is_relative_to(root) for path in resolved.values()):
@@ -49,7 +51,7 @@ def initialize_data_paths(data_dir: Path) -> DataPaths:
     database = resolved["database"]
     if database.exists() and not database.is_file():
         raise StartupError("invalid_database_path", "The SQLite path is not a regular file")
-    for name in ("objects", "lance", "staging"):
+    for name in ("objects", "lance", "staging", "agent_work"):
         path = resolved[name]
         path.mkdir(exist_ok=True)
         if not path.is_dir():
@@ -61,6 +63,7 @@ def initialize_data_paths(data_dir: Path) -> DataPaths:
         objects=resolved["objects"],
         lance=resolved["lance"],
         staging=resolved["staging"],
+        agent_work=resolved["agent_work"],
     )
 
 
@@ -105,7 +108,7 @@ def check_database_ready(database_path: Path) -> None:
 
 
 def check_local_directories(paths: DataPaths) -> None:
-    for path in (paths.objects, paths.lance, paths.staging):
+    for path in (paths.objects, paths.lance, paths.staging, paths.agent_work):
         resolved = path.resolve(strict=True)
         if not resolved.is_dir() or not resolved.is_relative_to(paths.root):
             raise StartupError("storage_not_ready", "A local storage directory is unavailable")

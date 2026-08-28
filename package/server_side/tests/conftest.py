@@ -63,6 +63,17 @@ def valid_config(tmp_path: Path) -> ConfigFile:
                 "input_tokens": 1000,
                 "output_tokens": 500,
                 "thinking_tokens": 300,
+                "compression_threshold": 0.8,
+                "thinking_level_options": [
+                    "on",
+                    "off",
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                ],
+                "default_thinking_level": "",
             },
             "rag": {
                 "chunk_size": 1000,

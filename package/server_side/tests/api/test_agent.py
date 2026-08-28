@@ -33,15 +33,21 @@ class _Identity:
 
 class _Runtime:
     def __init__(self) -> None:
-        self.inputs: list[str] = []
+        self.inputs: list[tuple[str, str | None]] = []
 
     async def run(
-        self, actor: VerifiedIdentity, user_input: str
+        self,
+        actor: VerifiedIdentity,
+        user_input: str,
+        *,
+        thinking_level: str | None = None,
     ) -> AgentRunResult:
         assert actor.user_id == "user-1"
-        self.inputs.append(user_input)
+        self.inputs.append((user_input, thinking_level))
         return AgentRunResult(
             answer="The /root decision.",
+            reasoning_content="The root checked every report.",
+            thinking_level=thinking_level,
             agents_created=2,
             max_depth_reached=1,
         )
@@ -62,18 +68,21 @@ def test_agent_route_exposes_only_root_answer_and_safe_team_metrics() -> None:
     allowed = client.post(
         "/api/agent/runs",
         headers={"Authorization": "Bearer agent-token"},
-        json={"input": "decide"},
+        json={"input": "decide", "thinking_level": " HIGH "},
     )
 
     assert missing.status_code == 401
     assert allowed.status_code == 200
     assert allowed.json() == {
         "answer": "The /root decision.",
+        "reasoning_content": "The root checked every report.",
+        "thinking_level": "high",
         "agents_created": 2,
         "max_depth_reached": 1,
     }
-    assert runtime.inputs == ["decide"]
-    assert "report" not in allowed.text
+    assert runtime.inputs == [("decide", "high")]
+    assert "agent_path" not in allowed.text
+    assert "private_task_history" not in allowed.text
 
 
 def test_agent_run_requires_capability_before_any_provider_call(

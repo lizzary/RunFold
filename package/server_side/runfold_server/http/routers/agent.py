@@ -19,7 +19,11 @@ def create_agent_router(
 
     @router.post("/runs", response_model=AgentRunResponse)
     async def run_agent(body: AgentRunRequest, actor: Actor) -> AgentRunResponse:
-        result = await runtime_service.run(actor, body.input)
+        result = await runtime_service.run(
+            actor,
+            body.input,
+            thinking_level=body.thinking_level,
+        )
         return AgentRunResponse.model_validate(result)
 
     return router

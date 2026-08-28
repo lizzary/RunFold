@@ -20,7 +20,9 @@ python -m runfold_server --config C:\secure\runfold\config.yaml
 
 生产环境应使用专用的低权限操作系统账号运行服务。该账号需要读取 YAML 配置，并只需读写
 `data.directory` 指向的数据根目录；SQLite 文件、`objects`、`lance` 和 `staging` 不应允许其他普通
-用户读取。API 必须位于提供 HTTPS 的反向代理之后，`cors.allowed_origins` 只能配置精确 origin。
+用户读取。`agent_work/<user_id>` 是 Agent 的持久工作区，也必须随数据目录一起限制权限和备份；父子
+Agent 共享同一用户目录，不跨用户共享。API 必须位于提供 HTTPS 的反向代理之后，
+`cors.allowed_origins` 只能配置精确 origin。
 
 `provider.base_url` 指向的 OpenAI-compatible 服务会收到经授权发送的文档抽取正文、搜索文本、用户
 Agent input、受权检索结果和员工 Agent 报告。该服务必须同时支持 embeddings 与 Chat Completions API，
@@ -30,8 +32,13 @@ Agent input、受权检索结果和员工 Agent 报告。该服务必须同时�
 Agent 只在当前 HTTP 请求内同步运行。应根据供应商延迟设置反向代理超时。用户只配置
 `agent.context_window_tokens`、`agent.provider_concurrency`、`agent.input_tokens`、
 `agent.output_tokens` 与 `agent.thinking_tokens`；员工数、递归深度、并行委派宽度、LangGraph steps 和
-可见输出上限全部由这五项派生。月 Agent token 限额继续控制累计成本。不要为延长请求而增加第二个
+可见输出上限全部由这五项派生。`agent.compression_threshold` 可选，默认 `0.8`。上下文计数为估算值；
+`agent.thinking_level_options` 控制客户端可选等级，`agent.default_thinking_level` 为空时使用供应商默认，
+非空时必须属于 options。checkpoint 与正常调用都计入月 Agent tokens。不要为延长请求而增加第二个
 worker 或副本；当前正确性仍依赖单进程。
+
+提交的配置示例把 `rag.upload_max_bytes` 设为 500 MiB。反向代理的请求体上限必须至少与其一致；文件
+仍会流式写入 staging，并继续受抽取字符数、PDF 页数和 DOCX 解压后总大小限制。
 
 ## 备份
 

@@ -7,7 +7,6 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI
-from langchain_openai import ChatOpenAI
 
 from runfold_server.access_control.audit import AuditRepository, AuditService
 from runfold_server.access_control.authorization import AuthorizationService
@@ -30,10 +29,12 @@ from runfold_server.knowledge.object_store import ObjectStore
 from runfold_server.knowledge.reconciliation import ReconciliationService
 from runfold_server.knowledge.repository import KnowledgeRepository
 from runfold_server.knowledge.service import KnowledgeService
+from runfold_server.llm.openai_chat import OpenAICompatibleChatModel
 from runfold_server.llm.openai_embeddings import (
     OpenAIEmbeddingsClient,
     embedding_identity,
 )
+from runfold_server.runtime.files import FileWorkspaceService
 from runfold_server.runtime.service import AgentRuntimeService
 from runfold_server.runtime.skill_registry import SkillRegistry
 from runfold_server.storage.sqlite import (
@@ -147,6 +148,9 @@ def bootstrap(settings: Settings) -> FastAPI:
         skills=SkillRegistry(Path(__file__).parent / "runtime" / "skills"),
         budget=current_settings.agent_budget,
         provider_slots=provider_slots,
+        file_workspaces=FileWorkspaceService(paths.agent_work),
+        thinking_level_options=current_settings.agent_thinking_level_options,
+        default_thinking_level=current_settings.agent_default_thinking_level,
     )
 
     async def shutdown() -> None:
@@ -285,9 +289,9 @@ def _index_configuration(settings: Settings) -> IndexConfiguration:
     )
 
 
-def _chat_model(settings: Settings) -> ChatOpenAI:
+def _chat_model(settings: Settings) -> OpenAICompatibleChatModel:
     api_key = settings.openai_api_key or settings.agent_model
-    return ChatOpenAI(
+    return OpenAICompatibleChatModel(
         model=settings.agent_model,
         base_url=settings.openai_base_url,
         api_key=api_key,

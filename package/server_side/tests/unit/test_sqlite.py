@@ -23,6 +23,7 @@ def test_data_paths_and_database_initialize_and_reuse(tmp_path: Path) -> None:
     assert paths.objects.is_dir()
     assert paths.lance.is_dir()
     assert paths.staging.is_dir()
+    assert paths.agent_work.is_dir()
     with connect(paths.database) as connection:
         assert connection.execute("SELECT status FROM service_state").fetchone()[0] == "ready"
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1

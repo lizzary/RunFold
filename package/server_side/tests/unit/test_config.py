@@ -29,12 +29,26 @@ def test_load_settings_normalizes_values(valid_config: ConfigFile) -> None:
     assert settings.agent_budget.input_tokens == 1000
     assert settings.agent_budget.output_tokens == 500
     assert settings.agent_budget.thinking_tokens == 300
+    assert settings.agent_budget.compression_threshold == 0.8
     assert settings.agent_budget.visible_output_tokens == 200
     assert settings.agent_budget.agent_slots == 4
     assert settings.agent_budget.max_agents_per_run == 3
     assert settings.agent_budget.max_recursion_depth == 3
     assert settings.agent_budget.max_parallel_agents == 2
     assert settings.agent_budget.max_steps == 30
+    assert settings.agent_budget.compression_trigger_tokens == 800
+    assert settings.agent_budget.compression_keep_tokens == 200
+    assert settings.agent_budget.oversized_tool_result_tokens == 800
+    assert settings.agent_thinking_level_options == (
+        "on",
+        "off",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    )
+    assert settings.agent_default_thinking_level is None
 
 
 def test_server_values_have_defaults(valid_config: ConfigFile) -> None:
@@ -108,6 +122,75 @@ def test_zero_thinking_budget_is_supported(valid_config: ConfigFile) -> None:
 
     assert settings.agent_budget.thinking_tokens == 0
     assert settings.agent_budget.visible_output_tokens == 500
+
+
+def test_compression_threshold_defaults_to_eighty_percent(
+    valid_config: ConfigFile,
+) -> None:
+    del valid_config.values["agent"]["compression_threshold"]
+
+    assert valid_config.load().agent_budget.compression_threshold == 0.8
+
+
+def test_thinking_level_options_have_defaults_and_can_be_customized(
+    valid_config: ConfigFile,
+) -> None:
+    del valid_config.values["agent"]["thinking_level_options"]
+    assert valid_config.load().agent_thinking_level_options == (
+        "on",
+        "off",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    )
+
+    valid_config.values["agent"]["thinking_level_options"] = ["FAST", " deep "]
+    assert valid_config.load().agent_thinking_level_options == ("fast", "deep")
+
+
+def test_default_thinking_level_must_be_empty_or_enabled(
+    valid_config: ConfigFile,
+) -> None:
+    valid_config.values["agent"]["default_thinking_level"] = " HIGH "
+    assert valid_config.load().agent_default_thinking_level == "high"
+
+    valid_config.values["agent"]["default_thinking_level"] = "unsupported"
+    with pytest.raises(StartupError, match="default_thinking_level"):
+        valid_config.load()
+
+
+def test_default_thinking_level_is_required(valid_config: ConfigFile) -> None:
+    del valid_config.values["agent"]["default_thinking_level"]
+
+    with pytest.raises(StartupError, match="default_thinking_level"):
+        valid_config.load()
+
+
+@pytest.mark.parametrize(
+    "options",
+    ["on", [""], [1], ["low", "LOW"]],
+)
+def test_thinking_level_options_are_validated(
+    valid_config: ConfigFile,
+    options: object,
+) -> None:
+    valid_config.values["agent"]["thinking_level_options"] = options
+
+    with pytest.raises(StartupError, match="thinking_level_options"):
+        valid_config.load()
+
+
+@pytest.mark.parametrize("threshold", [0, 1, -0.1, 1.1, "0.8"])
+def test_compression_threshold_must_be_a_ratio(
+    valid_config: ConfigFile,
+    threshold: object,
+) -> None:
+    valid_config.values["agent"]["compression_threshold"] = threshold
+
+    with pytest.raises(StartupError, match="compression_threshold"):
+        valid_config.load()
 
 
 def test_overlap_must_be_smaller_than_chunk_size(valid_config: ConfigFile) -> None:

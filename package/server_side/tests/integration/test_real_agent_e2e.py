@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -24,13 +25,18 @@ def test_real_upload_index_search_agent_answer(tmp_path: Path) -> None:
         "username": "real-e2e-admin",
         "password": "real e2e administrator password",
     }
+    document_paths = sorted((server_root / "tests" / "doc").glob("*.docx"))
+    values["rag"]["upload_max_bytes"] = max(
+        path.stat().st_size for path in document_paths
+    )
+    values["rag"]["docx_max_uncompressed_bytes"] = max(
+        _docx_uncompressed_bytes(path) for path in document_paths
+    )
     config_path = tmp_path / "real-e2e.yaml"
     config_path.write_text(
         yaml.safe_dump(values, sort_keys=False),
         encoding="utf-8",
     )
-    document_path = next((server_root / "tests" / "doc").glob("*.docx"))
-
     with TestClient(bootstrap(load_settings(config_path))) as client:
         login = client.post(
             "/api/auth/login",
@@ -42,21 +48,28 @@ def test_real_upload_index_search_agent_answer(tmp_path: Path) -> None:
         assert login.status_code == 200, login.text
         headers = {"Authorization": f"Bearer {login.json()['token']}"}
 
-        uploaded = client.post(
-            "/api/rag/documents",
-            headers=headers,
-            data={"title": "Real Agent E2E W3C Check"},
-            files={
-                "file": (
-                    document_path.name,
-                    document_path.read_bytes(),
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                )
-            },
+        document_ids: dict[str, str] = {}
+        for document_path in document_paths:
+            uploaded = client.post(
+                "/api/rag/documents",
+                headers=headers,
+                data={"title": f"Real Agent E2E {document_path.stem}"},
+                files={
+                    "file": (
+                        document_path.name,
+                        document_path.read_bytes(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
+                },
+            )
+            assert uploaded.status_code == 201, uploaded.text
+            assert uploaded.json()["index_state"] == "ready"
+            document_ids[document_path.name] = uploaded.json()["id"]
+        document_id = next(
+            document_id
+            for name, document_id in document_ids.items()
+            if "W3C check" in name
         )
-        assert uploaded.status_code == 201, uploaded.text
-        document_id = uploaded.json()["id"]
-        assert uploaded.json()["index_state"] == "ready"
 
         searched = client.post(
             "/api/rag/search",
@@ -84,6 +97,8 @@ def test_real_upload_index_search_agent_answer(tmp_path: Path) -> None:
         )
         assert agent.status_code == 200, agent.text
         assert "missing tap function" in agent.json()["answer"].lower()
+        assert agent.json()["reasoning_content"]
+        assert agent.json()["thinking_level"] is None
         assert agent.json()["agents_created"] == 0
 
         usage = client.get("/api/usage/me", headers=headers)
@@ -98,5 +113,14 @@ def test_real_upload_index_search_agent_answer(tmp_path: Path) -> None:
         assert audit.status_code == 200, audit.text
         assert audit.json()["items"][0]["decision"] == "allowed"
 
-        deleted = client.delete(f"/api/rag/documents/{document_id}", headers=headers)
-        assert deleted.status_code == 204, deleted.text
+        for uploaded_id in document_ids.values():
+            deleted = client.delete(
+                f"/api/rag/documents/{uploaded_id}",
+                headers=headers,
+            )
+            assert deleted.status_code == 204, deleted.text
+
+
+def _docx_uncompressed_bytes(path: Path) -> int:
+    with zipfile.ZipFile(path) as archive:
+        return sum(item.file_size for item in archive.infolist())

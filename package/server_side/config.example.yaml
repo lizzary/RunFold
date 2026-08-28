@@ -26,11 +26,14 @@ agent:
   input_tokens: 70000
   output_tokens: 50000
   thinking_tokens: 40000
+  compression_threshold: 0.8
+  thinking_level_options: ["low", "medium", "xhigh"]
+  default_thinking_level: ""
 
 rag:
   chunk_size: 1000
   chunk_overlap: 100
-  upload_max_bytes: 20971520
+  upload_max_bytes: 524288000
   extract_max_characters: 2000000
   pdf_max_pages: 500
   docx_max_uncompressed_bytes: 104857600
