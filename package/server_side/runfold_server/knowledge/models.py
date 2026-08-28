@@ -93,3 +93,79 @@ class SearchResult:
     content_hash: str
     text: str
     distance: float
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentSection:
+    section_id: str
+    title: str
+    level: int
+    start_character: int
+    end_character: int
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentManifest:
+    document_id: str
+    title: str
+    original_filename: str
+    media_type: str
+    content_hash: str
+    extracted_characters: int
+    chunk_count: int
+    section_count: int
+    section_offset: int
+    next_section_offset: int
+    sections_eof: bool
+    sections: tuple[DocumentSection, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentTextSlice:
+    document_id: str
+    content_hash: str
+    offset_characters: int
+    next_offset_characters: int
+    eof: bool
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentChunkContext:
+    document_id: str
+    title: str
+    content_hash: str
+    requested_ordinal: int
+    start_ordinal: int
+    end_ordinal: int
+    chunks: tuple[Chunk, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentTextMatch:
+    start_character: int
+    end_character: int
+    line_number: int
+    context: str
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentTextSearch:
+    document_id: str
+    content_hash: str
+    query: str
+    case_sensitive: bool
+    total_matches: int
+    truncated: bool
+    matches: tuple[DocumentTextMatch, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentSectionSlice:
+    document_id: str
+    content_hash: str
+    section: DocumentSection
+    offset_characters: int
+    next_offset_characters: int
+    eof: bool
+    text: str

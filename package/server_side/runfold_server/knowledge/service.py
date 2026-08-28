@@ -23,6 +23,11 @@ from runfold_server.identity.models import VerifiedIdentity
 from runfold_server.identity.service import IdentityService
 from runfold_server.knowledge.access_policy import KnowledgeAccessPolicy
 from runfold_server.knowledge.chunker import chunk_text
+from runfold_server.knowledge.document_reader import (
+    document_sections,
+    search_literal,
+    slice_text,
+)
 from runfold_server.knowledge.lance_index import LanceIndex, UnsafeIndexResult
 from runfold_server.knowledge.models import (
     EDIT,
@@ -30,8 +35,13 @@ from runfold_server.knowledge.models import (
     READ,
     AclGrant,
     Document,
+    DocumentChunkContext,
     DocumentContent,
+    DocumentManifest,
+    DocumentSectionSlice,
     DocumentText,
+    DocumentTextSearch,
+    DocumentTextSlice,
     SearchResult,
     StagedDocument,
 )
@@ -42,10 +52,17 @@ from runfold_server.storage.sqlite import connect
 from runfold_server.usage.service import UsageService
 
 _VISIBLE_STATES = ("ready", "failed")
+_READ_CAPABILITIES = frozenset({RAG_DOCUMENT_READ})
 _SEARCH_CAPABILITIES = frozenset({RAG_SEARCH, RAG_DOCUMENT_READ})
 _MAX_SEARCH_QUERY_CHARACTERS = 10_000
 _MAX_SEARCH_SCOPE = 1_000
 _MAX_TOP_K = 100
+_MAX_DOCUMENT_READ_CHARACTERS = 16_000
+_MAX_MANIFEST_SECTIONS = 200
+_MAX_CHUNK_CONTEXT = 5
+_MAX_DOCUMENT_TEXT_QUERY_CHARACTERS = 1_000
+_MAX_DOCUMENT_TEXT_MATCHES = 100
+_MAX_DOCUMENT_TEXT_CONTEXT_CHARACTERS = 500
 
 
 class KnowledgeService:
@@ -377,6 +394,191 @@ class KnowledgeService:
         if current.content_hash != observed.content_hash:
             raise ApiError(409, "document_changed", "Document changed; retry the request")
         return DocumentText(document_id=document_id, text=text, content_hash=current.content_hash)
+
+    def document_manifest(
+        self,
+        actor: VerifiedIdentity,
+        document_id: str,
+        *,
+        section_offset: int,
+        section_limit: int,
+    ) -> DocumentManifest:
+        _validate_manifest_page(section_offset, section_limit)
+        document, text = self._authorized_extracted_snapshot(actor, document_id)
+        sections = document_sections(text, fallback_title=document.title)
+        if section_offset > len(sections):
+            raise ApiError(
+                422,
+                "invalid_section_page",
+                "Section offset is past the document outline",
+            )
+        end = min(len(sections), section_offset + section_limit)
+        return DocumentManifest(
+            document_id=document.id,
+            title=document.title,
+            original_filename=document.original_filename,
+            media_type=document.media_type,
+            content_hash=document.content_hash,
+            extracted_characters=document.extracted_characters,
+            chunk_count=document.chunk_count,
+            section_count=len(sections),
+            section_offset=section_offset,
+            next_section_offset=end,
+            sections_eof=end == len(sections),
+            sections=sections[section_offset:end],
+        )
+
+    def read_document_text(
+        self,
+        actor: VerifiedIdentity,
+        document_id: str,
+        *,
+        expected_content_hash: str,
+        offset_characters: int,
+        max_characters: int,
+    ) -> DocumentTextSlice:
+        _validate_document_read(offset_characters, max_characters)
+        document, text = self._authorized_extracted_snapshot(
+            actor,
+            document_id,
+            expected_content_hash=expected_content_hash,
+        )
+        try:
+            value, next_offset, eof = slice_text(
+                text,
+                offset=offset_characters,
+                maximum=max_characters,
+            )
+        except ValueError as error:
+            raise ApiError(
+                422,
+                "invalid_document_text_range",
+                "Document text range is invalid",
+            ) from error
+        return DocumentTextSlice(
+            document_id=document.id,
+            content_hash=document.content_hash,
+            offset_characters=offset_characters,
+            next_offset_characters=next_offset,
+            eof=eof,
+            text=value,
+        )
+
+    def read_chunk_context(
+        self,
+        actor: VerifiedIdentity,
+        document_id: str,
+        *,
+        expected_content_hash: str,
+        ordinal: int,
+        before: int,
+        after: int,
+    ) -> DocumentChunkContext:
+        _validate_chunk_context(ordinal, before, after)
+        document, text = self._authorized_extracted_snapshot(
+            actor,
+            document_id,
+            expected_content_hash=expected_content_hash,
+        )
+        chunks = chunk_text(text, size=self._chunk_size, overlap=self._chunk_overlap)
+        if len(chunks) != document.chunk_count:
+            raise ApiError(
+                503,
+                "document_text_inconsistent",
+                "Document text failed consistency validation",
+            )
+        if ordinal >= len(chunks):
+            raise ApiError(422, "invalid_chunk_ordinal", "Chunk ordinal is invalid")
+        start = max(0, ordinal - before)
+        end = min(len(chunks), ordinal + after + 1)
+        return DocumentChunkContext(
+            document_id=document.id,
+            title=document.title,
+            content_hash=document.content_hash,
+            requested_ordinal=ordinal,
+            start_ordinal=start,
+            end_ordinal=end - 1,
+            chunks=chunks[start:end],
+        )
+
+    def search_document_text(
+        self,
+        actor: VerifiedIdentity,
+        document_id: str,
+        *,
+        expected_content_hash: str,
+        query: str,
+        case_sensitive: bool,
+        max_matches: int,
+        context_characters: int,
+    ) -> DocumentTextSearch:
+        normalized_query = _document_text_query(query)
+        _validate_document_text_search(max_matches, context_characters)
+        document, text = self._authorized_extracted_snapshot(
+            actor,
+            document_id,
+            expected_content_hash=expected_content_hash,
+            capabilities=_SEARCH_CAPABILITIES,
+        )
+        total, matches = search_literal(
+            text,
+            query=normalized_query,
+            case_sensitive=case_sensitive,
+            maximum_matches=max_matches,
+            context_characters=context_characters,
+        )
+        return DocumentTextSearch(
+            document_id=document.id,
+            content_hash=document.content_hash,
+            query=normalized_query,
+            case_sensitive=case_sensitive,
+            total_matches=total,
+            truncated=total > len(matches),
+            matches=matches,
+        )
+
+    def read_document_section(
+        self,
+        actor: VerifiedIdentity,
+        document_id: str,
+        *,
+        expected_content_hash: str,
+        section_id: str,
+        offset_characters: int,
+        max_characters: int,
+    ) -> DocumentSectionSlice:
+        _validate_document_read(offset_characters, max_characters)
+        document, text = self._authorized_extracted_snapshot(
+            actor,
+            document_id,
+            expected_content_hash=expected_content_hash,
+        )
+        sections = document_sections(text, fallback_title=document.title)
+        section = next((item for item in sections if item.section_id == section_id), None)
+        if section is None:
+            raise ApiError(404, "document_section_not_found", "Document section not found")
+        section_text = text[section.start_character : section.end_character]
+        try:
+            value, next_offset, eof = slice_text(
+                section_text,
+                offset=offset_characters,
+                maximum=max_characters,
+            )
+        except ValueError as error:
+            raise ApiError(
+                422,
+                "invalid_document_text_range",
+                "Document text range is invalid",
+            ) from error
+        return DocumentSectionSlice(
+            document_id=document.id,
+            content_hash=document.content_hash,
+            section=section,
+            offset_characters=offset_characters,
+            next_offset_characters=next_offset,
+            eof=eof,
+            text=value,
+        )
 
     def update_metadata(
         self, actor: VerifiedIdentity, document_id: str, *, title: str
@@ -819,6 +1021,61 @@ class KnowledgeService:
                 now=now,
             )
 
+    def _authorized_extracted_snapshot(
+        self,
+        actor: VerifiedIdentity,
+        document_id: str,
+        *,
+        expected_content_hash: str | None = None,
+        capabilities: frozenset[str] = _READ_CAPABILITIES,
+    ) -> tuple[Document, str]:
+        observed = self._read_authorized_with_capabilities(
+            actor,
+            document_id,
+            capabilities=capabilities,
+        )
+        if (
+            expected_content_hash is not None
+            and observed.content_hash != expected_content_hash
+        ):
+            raise ApiError(409, "document_changed", "Document changed; restart the read")
+        text = self._objects.read_extracted(document_id)
+        current = self._read_authorized_with_capabilities(
+            actor,
+            document_id,
+            capabilities=capabilities,
+        )
+        if current.content_hash != observed.content_hash:
+            raise ApiError(409, "document_changed", "Document changed; restart the read")
+        if len(text) != current.extracted_characters:
+            raise ApiError(
+                503,
+                "document_text_inconsistent",
+                "Document text failed consistency validation",
+            )
+        return current, text
+
+    def _read_authorized_with_capabilities(
+        self,
+        actor: VerifiedIdentity,
+        document_id: str,
+        *,
+        capabilities: frozenset[str],
+    ) -> Document:
+        now = _now()
+        with connect(self._database_path) as connection:
+            connection.execute("BEGIN")
+            current, access = self._current_access(connection, actor, capabilities)
+            return self._access_policy.require_document(
+                connection,
+                context=current.context,
+                access=access,
+                document_id=document_id,
+                minimum_level=READ,
+                states=("ready",),
+                now=now,
+            )
+
     def _return_upload(self, actor: VerifiedIdentity, document_id: str) -> Document:
         with connect(self._database_path) as connection:
             connection.execute("BEGIN")
@@ -1019,6 +1276,71 @@ def _validate_search_scope(document_ids: tuple[str, ...] | None) -> None:
         return
     if not document_ids or len(document_ids) > _MAX_SEARCH_SCOPE:
         raise ApiError(422, "invalid_document_scope", "Document scope is invalid")
+
+
+def _validate_manifest_page(section_offset: int, section_limit: int) -> None:
+    if (
+        isinstance(section_offset, bool)
+        or section_offset < 0
+        or isinstance(section_limit, bool)
+        or section_limit < 1
+        or section_limit > _MAX_MANIFEST_SECTIONS
+    ):
+        raise ApiError(422, "invalid_section_page", "Section page is invalid")
+
+
+def _validate_document_read(offset_characters: int, max_characters: int) -> None:
+    if (
+        isinstance(offset_characters, bool)
+        or offset_characters < 0
+        or isinstance(max_characters, bool)
+        or max_characters < 1
+        or max_characters > _MAX_DOCUMENT_READ_CHARACTERS
+    ):
+        raise ApiError(
+            422,
+            "invalid_document_text_range",
+            "Document text range is invalid",
+        )
+
+
+def _validate_chunk_context(ordinal: int, before: int, after: int) -> None:
+    if (
+        isinstance(ordinal, bool)
+        or ordinal < 0
+        or isinstance(before, bool)
+        or before < 0
+        or before > _MAX_CHUNK_CONTEXT
+        or isinstance(after, bool)
+        or after < 0
+        or after > _MAX_CHUNK_CONTEXT
+    ):
+        raise ApiError(422, "invalid_chunk_context", "Chunk context is invalid")
+
+
+def _document_text_query(value: str) -> str:
+    normalized = value.strip()
+    if not normalized or len(normalized) > _MAX_DOCUMENT_TEXT_QUERY_CHARACTERS:
+        raise ApiError(422, "invalid_document_text_query", "Document text query is invalid")
+    return normalized
+
+
+def _validate_document_text_search(
+    max_matches: int, context_characters: int
+) -> None:
+    if (
+        isinstance(max_matches, bool)
+        or max_matches < 1
+        or max_matches > _MAX_DOCUMENT_TEXT_MATCHES
+        or isinstance(context_characters, bool)
+        or context_characters < 0
+        or context_characters > _MAX_DOCUMENT_TEXT_CONTEXT_CHARACTERS
+    ):
+        raise ApiError(
+            422,
+            "invalid_document_text_search_limit",
+            "Document text search limit is invalid",
+        )
 
 
 def _validate_grants(grants: tuple[AclGrant, ...]) -> None:

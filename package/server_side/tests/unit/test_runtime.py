@@ -302,6 +302,11 @@ def test_dynamic_tree_parallel_delegation_follow_up_and_skill_injection(
     assert model.seen_tool_sets
     assert all(
         {
+            "get_document_manifest",
+            "read_document_text",
+            "read_chunk_context",
+            "search_document_text",
+            "read_document_section",
             "write_file",
             "read_file",
             "read_files",
