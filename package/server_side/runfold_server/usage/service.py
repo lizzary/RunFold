@@ -38,6 +38,7 @@ class UsageService:
         default_max_documents: int,
         default_max_storage_bytes: int,
         default_monthly_embedding_tokens: int,
+        default_monthly_agent_tokens: int,
     ) -> None:
         self._database_path = database_path
         self._repository = repository
@@ -49,6 +50,7 @@ class UsageService:
             max_documents=default_max_documents,
             max_storage_bytes=default_max_storage_bytes,
             monthly_embedding_tokens=default_monthly_embedding_tokens,
+            monthly_agent_tokens=default_monthly_agent_tokens,
         )
 
     def limits(self, connection: sqlite3.Connection, user_id: str) -> EffectiveLimits:
@@ -70,6 +72,11 @@ class UsageService:
                 self._defaults.monthly_embedding_tokens
                 if row["monthly_embedding_tokens"] is None
                 else int(row["monthly_embedding_tokens"])
+            ),
+            monthly_agent_tokens=(
+                self._defaults.monthly_agent_tokens
+                if row["monthly_agent_tokens"] is None
+                else int(row["monthly_agent_tokens"])
             ),
         )
 
@@ -112,6 +119,28 @@ class UsageService:
         with connect(self._database_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             self._repository.add_embedding_tokens(
+                connection,
+                user_id=user_id,
+                month_utc=_month_utc(),
+                tokens=tokens,
+                now=now,
+            )
+
+    def require_agent_capacity(
+        self, connection: sqlite3.Connection, *, user_id: str
+    ) -> None:
+        limit = self.limits(connection, user_id).monthly_agent_tokens
+        current = self._repository.agent_tokens(connection, user_id, _month_utc())
+        if current >= limit:
+            raise _quota("agent_tokens")
+
+    def record_agent_tokens(self, user_id: str, tokens: int) -> None:
+        if tokens <= 0:
+            return
+        now = datetime.now(UTC).isoformat()
+        with connect(self._database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._repository.add_agent_tokens(
                 connection,
                 user_id=user_id,
                 month_utc=_month_utc(),
@@ -198,6 +227,7 @@ class UsageService:
         documents, storage = self._repository.document_totals(connection, user_id)
         month = _month_utc()
         embedding_tokens = self._repository.embedding_tokens(connection, user_id, month)
+        agent_tokens = self._repository.agent_tokens(connection, user_id, month)
         limits = self.limits(connection, user_id)
         return UsageSummary(
             user_id=user_id,
@@ -207,6 +237,7 @@ class UsageService:
             embedding_tokens=_quota_usage(
                 embedding_tokens, limits.monthly_embedding_tokens
             ),
+            agent_tokens=_quota_usage(agent_tokens, limits.monthly_agent_tokens),
         )
 
     def _raw_overrides(
@@ -214,7 +245,7 @@ class UsageService:
     ) -> LimitOverrides:
         row = self._repository.overrides(connection, user_id)
         if row is None:
-            return LimitOverrides(None, None, None)
+            return LimitOverrides(None, None, None, None)
         return LimitOverrides(
             max_documents=(
                 None if row["max_documents"] is None else int(row["max_documents"])
@@ -228,6 +259,11 @@ class UsageService:
                 None
                 if row["monthly_embedding_tokens"] is None
                 else int(row["monthly_embedding_tokens"])
+            ),
+            monthly_agent_tokens=(
+                None
+                if row["monthly_agent_tokens"] is None
+                else int(row["monthly_agent_tokens"])
             ),
         )
 
@@ -258,6 +294,7 @@ def _validate_overrides(overrides: LimitOverrides) -> None:
         overrides.max_documents,
         overrides.max_storage_bytes,
         overrides.monthly_embedding_tokens,
+        overrides.monthly_agent_tokens,
     )
     if any(
         value is not None and (isinstance(value, bool) or value <= 0)
@@ -271,4 +308,5 @@ def _safe_override_details(overrides: LimitOverrides) -> dict[str, int | None]:
         "max_documents": overrides.max_documents,
         "max_storage_bytes": overrides.max_storage_bytes,
         "monthly_embedding_limit": overrides.monthly_embedding_tokens,
+        "monthly_agent_limit": overrides.monthly_agent_tokens,
     }

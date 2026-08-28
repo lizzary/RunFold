@@ -62,9 +62,11 @@ EXPECTED_BUSINESS_OPERATIONS = {
     ("GET", "/api/rag/documents/{document_id}/acl"),
     ("PUT", "/api/rag/documents/{document_id}/acl"),
     ("POST", "/api/rag/search"),
+    ("POST", "/api/agent/runs"),
 }
 
 OWNER_CAPABILITIES = [
+    "agent.run",
     "rag.document.upload",
     "rag.document.read",
     "rag.document.update",
@@ -135,6 +137,7 @@ class RunFoldDemo:
         self.authentication_and_access_control()
         self.usage_limits()
         self.document_lifecycle_and_search()
+        self.agent_runtime()
         self.audit_events()
         self.logout_reader()
 
@@ -159,15 +162,7 @@ class RunFoldDemo:
         self.request("GET", "/docs/oauth2-redirect", description="Swagger OAuth2 回调页")
         self.request("GET", "/redoc", description="ReDoc 页面")
 
-        agent_paths = [
-            path
-            for path in schema.get("paths", {})
-            if path.startswith(("/api/agent", "/api/chat"))
-        ]
-        if agent_paths:
-            print(f"      检测到 Agent/Chat 路由：{', '.join(agent_paths)}")
-        else:
-            print("      Agent/Chat 对话 API 当前未实现（与项目现状一致）")
+        print("      已确认用户只通过 /api/agent/runs 对接 /root Agent")
 
     def authentication_and_access_control(self) -> None:
         self.phase("认证、用户、角色和能力")
@@ -355,6 +350,7 @@ class RunFoldDemo:
             "max_documents": 5,
             "max_storage_bytes": 5_000_000,
             "monthly_embedding_tokens": 100_000,
+            "monthly_agent_tokens": 100_000,
         }
         replaced = self.request(
             "PUT",
@@ -544,6 +540,28 @@ class RunFoldDemo:
         )
         self.state.document_id = None
 
+    def agent_runtime(self) -> None:
+        self.phase("/root Agent 与动态团队编排")
+        response = self.request(
+            "POST",
+            "/api/agent/runs",
+            token=self.state.owner_token,
+            json={
+                "input": (
+                    "Confirm that the RunFold agent endpoint is operational. "
+                    "Return a short final answer."
+                )
+            },
+            description="由 /root 处理用户需求",
+        )
+        payload = self.payload(response)
+        self.require(bool(payload["answer"].strip()), "/root 没有返回最终回答")
+        self.require(payload["max_depth_reached"] >= 0, "Agent 深度统计无效")
+        print(
+            "      /root 已返回最终回答，"
+            f"创建员工={payload['agents_created']}，最大深度={payload['max_depth_reached']}"
+        )
+
     def audit_events(self) -> None:
         self.phase("安全审计")
         audit = self.request(
@@ -598,6 +616,7 @@ class RunFoldDemo:
                     "max_documents": None,
                     "max_storage_bytes": None,
                     "monthly_embedding_tokens": None,
+                    "monthly_agent_tokens": None,
                 },
                 description="恢复用户默认配额",
             )

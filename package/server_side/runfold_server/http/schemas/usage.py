@@ -9,6 +9,7 @@ class LimitsReplaceRequest(StrictModel):
     max_documents: int | None = Field(gt=0)
     max_storage_bytes: int | None = Field(gt=0)
     monthly_embedding_tokens: int | None = Field(gt=0)
+    monthly_agent_tokens: int | None = Field(gt=0)
 
 
 class QuotaUsageResponse(StrictModel):
@@ -23,3 +24,4 @@ class UsageResponse(StrictModel):
     documents: QuotaUsageResponse
     storage_bytes: QuotaUsageResponse
     embedding_tokens: QuotaUsageResponse
+    agent_tokens: QuotaUsageResponse

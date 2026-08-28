@@ -22,8 +22,16 @@ python -m runfold_server --config C:\secure\runfold\config.yaml
 `data.directory` 指向的数据根目录；SQLite 文件、`objects`、`lance` 和 `staging` 不应允许其他普通
 用户读取。API 必须位于提供 HTTPS 的反向代理之后，`cors.allowed_origins` 只能配置精确 origin。
 
-`provider.base_url` 指向的 embedding 服务会收到经授权发送的文档抽取正文和搜索文本。部署方必须把
-它视为受信任的数据处理方，并自行确认其地域、留存、训练使用和访问控制政策。
+`provider.base_url` 指向的 OpenAI-compatible 服务会收到经授权发送的文档抽取正文、搜索文本、用户
+Agent input、受权检索结果和员工 Agent 报告。该服务必须同时支持 embeddings 与 Chat Completions API，
+并在 usage 中返回 input、output 与 reasoning token 明细。
+部署方必须把它视为受信任的数据处理方，并自行确认其地域、留存、训练使用和访问控制政策。
+
+Agent 只在当前 HTTP 请求内同步运行。应根据供应商延迟设置反向代理超时。用户只配置
+`agent.context_window_tokens`、`agent.provider_concurrency`、`agent.input_tokens`、
+`agent.output_tokens` 与 `agent.thinking_tokens`；员工数、递归深度、并行委派宽度、LangGraph steps 和
+可见输出上限全部由这五项派生。月 Agent token 限额继续控制累计成本。不要为延长请求而增加第二个
+worker 或副本；当前正确性仍依赖单进程。
 
 ## 备份
 

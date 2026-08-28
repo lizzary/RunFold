@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI
+from langchain_openai import ChatOpenAI
 
 from runfold_server.access_control.audit import AuditRepository, AuditService
 from runfold_server.access_control.authorization import AuthorizationService
@@ -12,7 +15,6 @@ from runfold_server.access_control.repository import AccessControlRepository
 from runfold_server.access_control.service import AccessControlService
 from runfold_server.config import Settings
 from runfold_server.http.app import create_app
-from runfold_server.http.routers.temporary_responses import TemporaryResponsesClient
 from runfold_server.identity.passwords import Argon2PasswordHasher
 from runfold_server.identity.repository import IdentityRepository
 from runfold_server.identity.service import IdentityService
@@ -32,6 +34,8 @@ from runfold_server.llm.openai_embeddings import (
     OpenAIEmbeddingsClient,
     embedding_identity,
 )
+from runfold_server.runtime.service import AgentRuntimeService
+from runfold_server.runtime.skill_registry import SkillRegistry
 from runfold_server.storage.sqlite import (
     DataPaths,
     check_database_ready,
@@ -101,8 +105,12 @@ def bootstrap(settings: Settings) -> FastAPI:
         default_monthly_embedding_tokens=(
             current_settings.default_monthly_embedding_tokens
         ),
+        default_monthly_agent_tokens=current_settings.default_monthly_agent_tokens,
     )
     http_client = httpx.AsyncClient(timeout=current_settings.llm_timeout_seconds)
+    provider_slots = asyncio.Semaphore(
+        current_settings.agent_budget.provider_concurrency
+    )
     embeddings = OpenAIEmbeddingsClient(
         http_client=http_client,
         base_url=current_settings.openai_base_url,
@@ -110,6 +118,7 @@ def bootstrap(settings: Settings) -> FastAPI:
         model=current_settings.embedding_model,
         dimensions=current_settings.embedding_dimensions,
         max_retries=current_settings.llm_max_retries,
+        provider_slots=provider_slots,
     )
     knowledge_service = KnowledgeService(
         database_path=paths.database,
@@ -126,6 +135,25 @@ def bootstrap(settings: Settings) -> FastAPI:
         chunk_overlap=current_settings.chunk_overlap,
         embed_batch_size=current_settings.embed_batch_size,
     )
+    chat_model = _chat_model(current_settings)
+    runtime_service = AgentRuntimeService(
+        database_path=paths.database,
+        identity=identity_service,
+        authorization=authorization_service,
+        audit=audit_repository,
+        knowledge=knowledge_service,
+        usage=usage_service,
+        model=chat_model,
+        skills=SkillRegistry(Path(__file__).parent / "runtime" / "skills"),
+        budget=current_settings.agent_budget,
+        provider_slots=provider_slots,
+    )
+
+    async def shutdown() -> None:
+        await http_client.aclose()
+        await chat_model.root_async_client.close()
+        chat_model.root_client.close()
+
     readiness_check = _readiness_check(paths, index)
     if not readiness_check():
         raise RuntimeError("Local infrastructure did not become ready")
@@ -142,13 +170,8 @@ def bootstrap(settings: Settings) -> FastAPI:
             identity=identity_service,
             authorization=authorization_service,
         ),
-        temporary_responses_client=TemporaryResponsesClient(
-            http_client=http_client,
-            base_url=current_settings.openai_base_url,
-            api_key=current_settings.openai_api_key,
-            max_retries=current_settings.llm_max_retries,
-        ),
-        shutdown=http_client.aclose,
+        runtime_service=runtime_service,
+        shutdown=shutdown,
     )
 
 
@@ -176,10 +199,12 @@ async def rebuild_index(settings: Settings, actor_username: str) -> None:
         default_max_documents=settings.default_max_documents,
         default_max_storage_bytes=settings.default_max_storage_bytes,
         default_monthly_embedding_tokens=settings.default_monthly_embedding_tokens,
+        default_monthly_agent_tokens=settings.default_monthly_agent_tokens,
     )
     configuration = _index_configuration(settings)
     index = LanceIndex(paths.lance, configuration.dimensions)
     http_client = httpx.AsyncClient(timeout=settings.llm_timeout_seconds)
+    provider_slots = asyncio.Semaphore(settings.agent_budget.provider_concurrency)
     try:
         await IndexMaintenanceService(
             database_path=paths.database,
@@ -196,6 +221,7 @@ async def rebuild_index(settings: Settings, actor_username: str) -> None:
                 model=settings.embedding_model,
                 dimensions=settings.embedding_dimensions,
                 max_retries=settings.llm_max_retries,
+                provider_slots=provider_slots,
             ),
             usage=usage_service,
             configuration=configuration,
@@ -256,4 +282,25 @@ def _index_configuration(settings: Settings) -> IndexConfiguration:
         dimensions=settings.embedding_dimensions,
         chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
+    )
+
+
+def _chat_model(settings: Settings) -> ChatOpenAI:
+    api_key = settings.openai_api_key or settings.agent_model
+    return ChatOpenAI(
+        model=settings.agent_model,
+        base_url=settings.openai_base_url,
+        api_key=api_key,
+        timeout=settings.llm_timeout_seconds,
+        max_retries=settings.llm_max_retries,
+        max_completion_tokens=settings.agent_budget.output_tokens,
+        extra_body={
+            "thinking_budget_tokens": settings.agent_budget.thinking_tokens,
+        },
+        profile={
+            "max_input_tokens": settings.agent_budget.input_tokens,
+            "max_output_tokens": settings.agent_budget.output_tokens,
+        },
+        use_responses_api=False,
+        store=False,
     )

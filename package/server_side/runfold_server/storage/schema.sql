@@ -99,6 +99,9 @@ CREATE TABLE user_limits (
     monthly_embedding_tokens INTEGER CHECK (
         monthly_embedding_tokens IS NULL OR monthly_embedding_tokens > 0
     ),
+    monthly_agent_tokens INTEGER CHECK (
+        monthly_agent_tokens IS NULL OR monthly_agent_tokens > 0
+    ),
     updated_by_user_id TEXT NOT NULL REFERENCES users(id),
     updated_at TEXT NOT NULL
 );
@@ -107,6 +110,7 @@ CREATE TABLE usage_monthly (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     month_utc TEXT NOT NULL,
     embedding_tokens INTEGER NOT NULL DEFAULT 0 CHECK (embedding_tokens >= 0),
+    agent_tokens INTEGER NOT NULL DEFAULT 0 CHECK (agent_tokens >= 0),
     search_requests INTEGER NOT NULL DEFAULT 0 CHECK (search_requests >= 0),
     uploads INTEGER NOT NULL DEFAULT 0 CHECK (uploads >= 0),
     updated_at TEXT NOT NULL,
@@ -161,6 +165,7 @@ INSERT INTO capabilities (code, description) VALUES
     ('identity.user.manage', 'Create, enable, disable, and reset users'),
     ('identity.role.read', 'View roles, capabilities, and assignments'),
     ('identity.role.manage', 'Manage roles, capabilities, and assignments'),
+    ('agent.run', 'Run the root agent and its delegated team'),
     ('rag.document.upload', 'Upload documents'),
     ('rag.document.read', 'Read authorized documents'),
     ('rag.document.update', 'Update authorized documents'),
@@ -183,6 +188,7 @@ INSERT INTO role_capabilities (role_id, capability_code)
 SELECT '00000000-0000-4000-8000-000000000001', code FROM capabilities;
 
 INSERT INTO role_capabilities (role_id, capability_code) VALUES
+    ('00000000-0000-4000-8000-000000000002', 'agent.run'),
     ('00000000-0000-4000-8000-000000000002', 'identity.user.read'),
     ('00000000-0000-4000-8000-000000000002', 'identity.role.read'),
     ('00000000-0000-4000-8000-000000000002', 'rag.document.upload'),
@@ -192,11 +198,13 @@ INSERT INTO role_capabilities (role_id, capability_code) VALUES
     ('00000000-0000-4000-8000-000000000002', 'rag.document.acl.manage'),
     ('00000000-0000-4000-8000-000000000002', 'rag.search'),
     ('00000000-0000-4000-8000-000000000002', 'usage.self.read'),
+    ('00000000-0000-4000-8000-000000000003', 'agent.run'),
     ('00000000-0000-4000-8000-000000000003', 'rag.document.upload'),
     ('00000000-0000-4000-8000-000000000003', 'rag.document.read'),
     ('00000000-0000-4000-8000-000000000003', 'rag.document.update'),
     ('00000000-0000-4000-8000-000000000003', 'rag.search'),
     ('00000000-0000-4000-8000-000000000003', 'usage.self.read'),
+    ('00000000-0000-4000-8000-000000000004', 'agent.run'),
     ('00000000-0000-4000-8000-000000000004', 'rag.document.read'),
     ('00000000-0000-4000-8000-000000000004', 'rag.search'),
     ('00000000-0000-4000-8000-000000000004', 'usage.self.read');

@@ -23,6 +23,18 @@ def test_load_settings_normalizes_values(valid_config: ConfigFile) -> None:
     assert settings.openai_base_url == "http://localhost:11434/v1"
     assert settings.openai_api_key == ""
     assert settings.llm_timeout_seconds == 10.5
+    assert settings.agent_model == "test-chat"
+    assert settings.agent_budget.context_window_tokens == 6000
+    assert settings.agent_budget.provider_concurrency == 2
+    assert settings.agent_budget.input_tokens == 1000
+    assert settings.agent_budget.output_tokens == 500
+    assert settings.agent_budget.thinking_tokens == 300
+    assert settings.agent_budget.visible_output_tokens == 200
+    assert settings.agent_budget.agent_slots == 4
+    assert settings.agent_budget.max_agents_per_run == 3
+    assert settings.agent_budget.max_recursion_depth == 3
+    assert settings.agent_budget.max_parallel_agents == 2
+    assert settings.agent_budget.max_steps == 30
 
 
 def test_server_values_have_defaults(valid_config: ConfigFile) -> None:
@@ -51,6 +63,8 @@ def test_missing_required_value_is_rejected(valid_config: ConfigFile) -> None:
         (("provider", "embedding_dimensions"), 0),
         (("provider", "timeout_seconds"), float("nan")),
         (("provider", "max_retries"), -1),
+        (("agent", "provider_concurrency"), 0),
+        (("agent", "thinking_tokens"), 500),
     ],
 )
 def test_invalid_configuration_is_rejected(
@@ -69,6 +83,31 @@ def test_unknown_fields_are_rejected(valid_config: ConfigFile) -> None:
 
     with pytest.raises(StartupError, match="unknown field"):
         valid_config.load()
+
+
+def test_agent_input_and_output_must_fit_context_window(
+    valid_config: ConfigFile,
+) -> None:
+    valid_config.values["agent"]["input_tokens"] = 5600
+
+    with pytest.raises(StartupError, match="must fit"):
+        valid_config.load()
+
+
+def test_old_agent_limit_fields_are_rejected(valid_config: ConfigFile) -> None:
+    valid_config.values["agent"]["max_steps"] = 10
+
+    with pytest.raises(StartupError, match="unknown field"):
+        valid_config.load()
+
+
+def test_zero_thinking_budget_is_supported(valid_config: ConfigFile) -> None:
+    valid_config.values["agent"]["thinking_tokens"] = 0
+
+    settings = valid_config.load()
+
+    assert settings.agent_budget.thinking_tokens == 0
+    assert settings.agent_budget.visible_output_tokens == 500
 
 
 def test_overlap_must_be_smaller_than_chunk_size(valid_config: ConfigFile) -> None:

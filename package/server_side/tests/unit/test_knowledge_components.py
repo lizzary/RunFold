@@ -114,6 +114,7 @@ def test_embedding_client_validates_order_dimensions_finiteness_and_usage() -> N
                 model="embedding",
                 dimensions=2,
                 max_retries=1,
+                provider_slots=asyncio.Semaphore(1),
             )
             result = await client.embed(("safe input",))
             assert result.vectors == ((0.1, 0.2),)
@@ -137,6 +138,7 @@ def test_embedding_client_validates_order_dimensions_finiteness_and_usage() -> N
                 model="embedding",
                 dimensions=2,
                 max_retries=0,
+                provider_slots=asyncio.Semaphore(1),
             )
             with pytest.raises(ApiError) as error:
                 await client.embed(("safe input",))

@@ -13,6 +13,43 @@ from runfold_server.errors import StartupError
 
 
 @dataclass(frozen=True, slots=True)
+class AgentBudget:
+    context_window_tokens: int
+    provider_concurrency: int
+    input_tokens: int
+    output_tokens: int
+    thinking_tokens: int
+
+    @property
+    def visible_output_tokens(self) -> int:
+        return self.output_tokens - self.thinking_tokens
+
+    @property
+    def turn_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+    @property
+    def agent_slots(self) -> int:
+        return self.context_window_tokens // self.turn_tokens
+
+    @property
+    def max_agents_per_run(self) -> int:
+        return self.agent_slots - 1
+
+    @property
+    def max_recursion_depth(self) -> int:
+        return self.max_agents_per_run
+
+    @property
+    def max_parallel_agents(self) -> int:
+        return min(self.provider_concurrency, self.max_agents_per_run)
+
+    @property
+    def max_steps(self) -> int:
+        return self.context_window_tokens // self.visible_output_tokens
+
+
+@dataclass(frozen=True, slots=True)
 class Settings:
     host: str
     port: int
@@ -25,6 +62,8 @@ class Settings:
     embed_batch_size: int
     llm_timeout_seconds: float
     llm_max_retries: int
+    agent_model: str
+    agent_budget: AgentBudget
     chunk_size: int
     chunk_overlap: int
     upload_max_bytes: int
@@ -37,13 +76,23 @@ class Settings:
     default_max_documents: int
     default_max_storage_bytes: int
     default_monthly_embedding_tokens: int
+    default_monthly_agent_tokens: int
 
 
 def load_settings(path: str | Path) -> Settings:
     document = _load_yaml(Path(path))
     _reject_unknown(
         document,
-        {"server", "data", "cors", "provider", "rag", "auth", "limits"},
+        {
+            "server",
+            "data",
+            "cors",
+            "provider",
+            "agent",
+            "rag",
+            "auth",
+            "limits",
+        },
         "configuration",
     )
 
@@ -51,6 +100,7 @@ def load_settings(path: str | Path) -> Settings:
     data = _required_mapping(document, "data", "data")
     cors = _required_mapping(document, "cors", "cors")
     provider = _required_mapping(document, "provider", "provider")
+    agent = _required_mapping(document, "agent", "agent")
     rag = _required_mapping(document, "rag", "rag")
     auth = _required_mapping(document, "auth", "auth")
     limits = _required_mapping(document, "limits", "limits")
@@ -72,6 +122,18 @@ def load_settings(path: str | Path) -> Settings:
         "provider",
     )
     _reject_unknown(
+        agent,
+        {
+            "model",
+            "context_window_tokens",
+            "provider_concurrency",
+            "input_tokens",
+            "output_tokens",
+            "thinking_tokens",
+        },
+        "agent",
+    )
+    _reject_unknown(
         rag,
         {
             "chunk_size",
@@ -90,6 +152,7 @@ def load_settings(path: str | Path) -> Settings:
             "default_max_documents",
             "default_max_storage_bytes",
             "default_monthly_embedding_tokens",
+            "default_monthly_agent_tokens",
         },
         "limits",
     )
@@ -127,6 +190,50 @@ def load_settings(path: str | Path) -> Settings:
     )
     llm_max_retries = _required_integer(
         provider, "max_retries", "provider.max_retries", minimum=0
+    )
+    agent_model = _required_string(agent, "model", "agent.model")
+    agent_context_window_tokens = _required_integer(
+        agent,
+        "context_window_tokens",
+        "agent.context_window_tokens",
+    )
+    agent_provider_concurrency = _required_integer(
+        agent,
+        "provider_concurrency",
+        "agent.provider_concurrency",
+    )
+    agent_input_tokens = _required_integer(
+        agent,
+        "input_tokens",
+        "agent.input_tokens",
+    )
+    agent_output_tokens = _required_integer(
+        agent,
+        "output_tokens",
+        "agent.output_tokens",
+    )
+    agent_thinking_tokens = _required_integer(
+        agent,
+        "thinking_tokens",
+        "agent.thinking_tokens",
+        minimum=0,
+    )
+    if agent_thinking_tokens >= agent_output_tokens:
+        raise _invalid(
+            "agent.thinking_tokens",
+            "must be smaller than agent.output_tokens",
+        )
+    if agent_input_tokens + agent_output_tokens > agent_context_window_tokens:
+        raise _invalid(
+            "agent.input_tokens",
+            "plus agent.output_tokens must fit agent.context_window_tokens",
+        )
+    agent_budget = AgentBudget(
+        context_window_tokens=agent_context_window_tokens,
+        provider_concurrency=agent_provider_concurrency,
+        input_tokens=agent_input_tokens,
+        output_tokens=agent_output_tokens,
+        thinking_tokens=agent_thinking_tokens,
     )
 
     chunk_size = _required_integer(rag, "chunk_size", "rag.chunk_size")
@@ -166,6 +273,11 @@ def load_settings(path: str | Path) -> Settings:
         "default_monthly_embedding_tokens",
         "limits.default_monthly_embedding_tokens",
     )
+    default_monthly_agent_tokens = _required_integer(
+        limits,
+        "default_monthly_agent_tokens",
+        "limits.default_monthly_agent_tokens",
+    )
 
     return Settings(
         host=host,
@@ -179,6 +291,8 @@ def load_settings(path: str | Path) -> Settings:
         embed_batch_size=embed_batch_size,
         llm_timeout_seconds=llm_timeout_seconds,
         llm_max_retries=llm_max_retries,
+        agent_model=agent_model,
+        agent_budget=agent_budget,
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         upload_max_bytes=upload_max_bytes,
@@ -191,6 +305,7 @@ def load_settings(path: str | Path) -> Settings:
         default_max_documents=default_max_documents,
         default_max_storage_bytes=default_max_storage_bytes,
         default_monthly_embedding_tokens=default_monthly_embedding_tokens,
+        default_monthly_agent_tokens=default_monthly_agent_tokens,
     )
 
 

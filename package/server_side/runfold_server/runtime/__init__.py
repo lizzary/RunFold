@@ -1,0 +1,1 @@
+"""Permission-bound agent runtime."""

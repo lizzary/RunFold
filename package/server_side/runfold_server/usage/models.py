@@ -8,6 +8,7 @@ class EffectiveLimits:
     max_documents: int
     max_storage_bytes: int
     monthly_embedding_tokens: int
+    monthly_agent_tokens: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,6 +16,7 @@ class LimitOverrides:
     max_documents: int | None
     max_storage_bytes: int | None
     monthly_embedding_tokens: int | None
+    monthly_agent_tokens: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,3 +33,4 @@ class UsageSummary:
     documents: QuotaUsage
     storage_bytes: QuotaUsage
     embedding_tokens: QuotaUsage
+    agent_tokens: QuotaUsage

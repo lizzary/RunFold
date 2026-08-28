@@ -36,6 +36,7 @@ def create_usage_router(
                 max_documents=body.max_documents,
                 max_storage_bytes=body.max_storage_bytes,
                 monthly_embedding_tokens=body.monthly_embedding_tokens,
+                monthly_agent_tokens=body.monthly_agent_tokens,
             ),
         )
         return _usage_response(summary)

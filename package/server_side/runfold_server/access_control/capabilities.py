@@ -4,6 +4,7 @@ IDENTITY_USER_READ = "identity.user.read"
 IDENTITY_USER_MANAGE = "identity.user.manage"
 IDENTITY_ROLE_READ = "identity.role.read"
 IDENTITY_ROLE_MANAGE = "identity.role.manage"
+AGENT_RUN = "agent.run"
 RAG_DOCUMENT_UPLOAD = "rag.document.upload"
 RAG_DOCUMENT_READ = "rag.document.read"
 RAG_DOCUMENT_UPDATE = "rag.document.update"
@@ -22,6 +23,7 @@ ALL_CAPABILITIES = frozenset(
         IDENTITY_USER_MANAGE,
         IDENTITY_ROLE_READ,
         IDENTITY_ROLE_MANAGE,
+        AGENT_RUN,
         RAG_DOCUMENT_UPLOAD,
         RAG_DOCUMENT_READ,
         RAG_DOCUMENT_UPDATE,

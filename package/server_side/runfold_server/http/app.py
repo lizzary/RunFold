@@ -18,18 +18,16 @@ from runfold_server.access_control.audit import AuditService
 from runfold_server.access_control.service import AccessControlService
 from runfold_server.errors import ApiError
 from runfold_server.http.routers.access_control import create_access_control_router
+from runfold_server.http.routers.agent import create_agent_router
 from runfold_server.http.routers.audit import create_audit_router
 from runfold_server.http.routers.auth import create_auth_router
 from runfold_server.http.routers.documents import create_documents_router
 from runfold_server.http.routers.health import create_health_router
 from runfold_server.http.routers.search import create_search_router
-from runfold_server.http.routers.temporary_responses import (
-    TemporaryResponsesClient,
-    create_temporary_responses_router,
-)
 from runfold_server.http.routers.usage import create_usage_router
 from runfold_server.identity.service import IdentityService
 from runfold_server.knowledge.service import KnowledgeService
+from runfold_server.runtime.service import AgentRuntimeService
 from runfold_server.usage.service import UsageService
 
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -45,7 +43,7 @@ def create_app(
     knowledge_service: KnowledgeService | None = None,
     usage_service: UsageService | None = None,
     audit_service: AuditService | None = None,
-    temporary_responses_client: TemporaryResponsesClient | None = None,
+    runtime_service: AgentRuntimeService | None = None,
     shutdown: Callable[[], Awaitable[None]] | None = None,
 ) -> FastAPI:
     @asynccontextmanager
@@ -158,13 +156,8 @@ def create_app(
         raise ValueError("Identity and access-control services must be installed together")
     if identity_service is not None and access_control_service is not None:
         app.include_router(create_auth_router(identity_service))
-        if temporary_responses_client is not None:
-            app.include_router(
-                create_temporary_responses_router(
-                    identity_service,
-                    temporary_responses_client,
-                )
-            )
+        if runtime_service is not None:
+            app.include_router(create_agent_router(identity_service, runtime_service))
         app.include_router(
             create_access_control_router(identity_service, access_control_service)
         )

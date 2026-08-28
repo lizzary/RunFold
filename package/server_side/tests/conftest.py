@@ -56,6 +56,14 @@ def valid_config(tmp_path: Path) -> ConfigFile:
                 "timeout_seconds": 10.5,
                 "max_retries": 2,
             },
+            "agent": {
+                "model": "test-chat",
+                "context_window_tokens": 6000,
+                "provider_concurrency": 2,
+                "input_tokens": 1000,
+                "output_tokens": 500,
+                "thinking_tokens": 300,
+            },
             "rag": {
                 "chunk_size": 1000,
                 "chunk_overlap": 100,
@@ -69,6 +77,7 @@ def valid_config(tmp_path: Path) -> ConfigFile:
                 "default_max_documents": 100,
                 "default_max_storage_bytes": 1073741824,
                 "default_monthly_embedding_tokens": 1000000,
+                "default_monthly_agent_tokens": 500000,
             },
         },
     )

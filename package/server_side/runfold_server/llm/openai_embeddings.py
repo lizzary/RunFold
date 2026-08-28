@@ -28,6 +28,7 @@ class OpenAIEmbeddingsClient:
         model: str,
         dimensions: int,
         max_retries: int,
+        provider_slots: asyncio.Semaphore,
     ) -> None:
         self._http = http_client
         self._endpoint = f"{base_url}/embeddings"
@@ -35,6 +36,7 @@ class OpenAIEmbeddingsClient:
         self._model = model
         self._dimensions = dimensions
         self._max_retries = max_retries
+        self._provider_slots = provider_slots
 
     async def embed(self, values: tuple[str, ...]) -> EmbeddingBatch:
         if not values:
@@ -42,11 +44,12 @@ class OpenAIEmbeddingsClient:
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
         for attempt in range(self._max_retries + 1):
             try:
-                response = await self._http.post(
-                    self._endpoint,
-                    headers=headers,
-                    json={"model": self._model, "input": list(values)},
-                )
+                async with self._provider_slots:
+                    response = await self._http.post(
+                        self._endpoint,
+                        headers=headers,
+                        json={"model": self._model, "input": list(values)},
+                    )
             except httpx.RequestError:
                 if attempt == self._max_retries:
                     raise _provider_error() from None

@@ -57,6 +57,7 @@ def test_usage_limits_are_aggregate_and_audit_is_system_admin_only(
             "max_documents": 2,
             "max_storage_bytes": 20,
             "monthly_embedding_tokens": 50,
+            "monthly_agent_tokens": 25,
         },
     )
     assert replaced.status_code == 200, replaced.text
@@ -77,6 +78,7 @@ def test_usage_limits_are_aggregate_and_audit_is_system_admin_only(
     event = audit.json()["items"][0]
     assert event["resource_id"] == user["id"]
     assert event["details"]["after"]["monthly_embedding_limit"] == 50
+    assert event["details"]["after"]["monthly_agent_limit"] == 25
     assert client.get("/api/usage/users/missing", headers=admin).status_code == 404
 
 
@@ -100,6 +102,7 @@ def test_limit_replacement_is_complete_and_rejects_unknown_fields(
             "max_documents": None,
             "max_storage_bytes": None,
             "monthly_embedding_tokens": None,
+            "monthly_agent_tokens": None,
             "chat_tokens": 1,
         },
     )
@@ -110,6 +113,7 @@ def test_limit_replacement_is_complete_and_rejects_unknown_fields(
             "max_documents": None,
             "max_storage_bytes": None,
             "monthly_embedding_tokens": None,
+            "monthly_agent_tokens": None,
         },
     )
 

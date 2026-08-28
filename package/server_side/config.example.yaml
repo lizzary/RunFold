@@ -11,13 +11,21 @@ cors:
     - http://127.0.0.1:3000
 
 provider:
-  base_url: https://api.openai.com/v1
-  api_key: replace-with-provider-api-key
-  embedding_model: text-embedding-3-small
-  embedding_dimensions: 1536
+  base_url: http://119.247.22.177:1395/v1
+  api_key: ""
+  embedding_model: text-embedding-nomic-embed-text-v1.5
+  embedding_dimensions: 768
   embed_batch_size: 16
   timeout_seconds: 30
   max_retries: 2
+
+agent:
+  model: qwen3.8-27b-uncensored-q6_k-mtp
+  context_window_tokens: 1240000
+  provider_concurrency: 1
+  input_tokens: 70000
+  output_tokens: 50000
+  thinking_tokens: 40000
 
 rag:
   chunk_size: 1000
@@ -37,3 +45,4 @@ limits:
   default_max_documents: 1000
   default_max_storage_bytes: 10737418240
   default_monthly_embedding_tokens: 100000000
+  default_monthly_agent_tokens: 10000000
